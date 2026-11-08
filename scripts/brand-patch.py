@@ -129,6 +129,18 @@ if n1 or n2:
 else:
     report.append("私密源入口: 未找到（可能已隐藏）")
 
+# ---------- 6. 隐藏「我的」页的登录提示按钮 ----------
+js, n = re.subn(
+    r"""\n[ \t]*\$\{state\.account\.loggedIn \? '' : `<button type="button" class="my-account" data-account-action="1">[^`]*</button>`\}""",
+    "",
+    js,
+    count=1,
+)
+if n:
+    report.append("我的页登录提示: 已隐藏")
+else:
+    report.append("我的页登录提示: 未找到（可能已隐藏）")
+
 write(JS, js)
 
 html = read(HTML)
