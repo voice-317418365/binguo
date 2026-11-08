@@ -29,6 +29,11 @@ import java.util.regex.Pattern;
  * 下载完再校验 APK 的 packageName，装错直接丢弃。
  */
 final class UpdateManager {
+    /** 自己的静态更新源：nginx 托管的 latest.json + APK，不依赖 GitHub，也不依赖后端。 */
+    private static final String STATIC_UPDATE = "http://101.201.32.104/update/latest.json";
+    private static final String STATIC_BASE = "http://101.201.32.104/update/";
+    /** GitHub 兜底开关：关掉后不会再去官方仓库，避免下载官方包（签名不同装不上）。 */
+    private static final boolean USE_GITHUB_FALLBACK = false;
     private static final String RELEASE_API = "https://api.github.com/repos/gybeyond1/Veyra/releases/latest";
     private static final String RELEASE_BASE = "https://github.com/gybeyond1/Veyra/releases/download/";
     private static final Pattern VERSION = Pattern.compile("\\d+\\.\\d+\\.\\d+");
@@ -177,12 +182,21 @@ final class UpdateManager {
         PackageInfo installed = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
         String localVersion = installed.versionName;
 
-        // 手动点「检查更新」= 顺便让后端当场查一次、把包下下来（优先本渠道）。
-        // 不然后端还是十分钟一轮的节奏，发版后要干等十几分钟才有包。
-        if (manual) triggerServerCheck();
+        // 静态源优先：自己的 nginx 托管 /update/latest.json，是唯一权威来源。
+        // 有结果就直接返回，不再往下问后端、也不回退 GitHub ——
+        // GitHub 上是官方版，签名和我们对不上，下载完装不进去，只会让用户以为更新坏了。
+        JSONObject viaStatic = tryStatic();
+        if (viaStatic != null) {
+            if (!isNewer(viaStatic.optString("versionName"), localVersion)) {
+                clearCandidate();
+                return status("current").put("version", localVersion);
+            }
+            candidate = candidateFrom(viaStatic);
+            preferences.edit().putString("available_manifest", viaStatic.toString()).apply();
+            return availableStatus(candidate, localVersion);
+        }
 
-        // 先问自己的后端：它已经把 APK 缓存在本地了，从它那里下比让手机直连 GitHub 稳得多。
-        // 后端没配置 / 连不上 / 还没拉到包，都安静地回退 GitHub —— 行为跟以前一样。
+        // 静态源不可用（还没发过版 / 网络不通）：后端配了才问，没配 tryServer 会立刻返回 null
         JSONObject viaServer = tryServer(localVersion);
         // 后端已经知道有新版、包还没下完：等几秒再看。立刻退回 GitHub 直连是最慢的一条路。
         for (int i = 0; manual && i < 5 && viaServer != null
@@ -211,7 +225,7 @@ final class UpdateManager {
         if (manual) preferences.edit().putLong("last_auto_check", now).apply();
         if (release == null) {
             clearCandidate();
-            return status("unpublished");
+            return status("current").put("version", localVersion);
         }
         String tag = release.optString("tag_name", "");
         String version = tag.replaceFirst("^[vV]", "");
@@ -389,6 +403,7 @@ final class UpdateManager {
      */
     private boolean isAllowedUrl(String url) {
         if (url == null || url.isEmpty()) return false;
+        if (url.startsWith(STATIC_BASE)) return true;
         if (url.startsWith(RELEASE_BASE)) return true;
         String base = ServerConfig.get(context);
         return !base.isEmpty() && url.startsWith(base);
@@ -425,6 +440,53 @@ final class UpdateManager {
      * 超时压得很短（连 4s / 读 6s）：后端通常就在身边，慢到这个程度说明它不可用，
      * 与其让用户干等，不如立刻回退。真正下包时用的是 15s/60s。
      */
+    /**
+     * 查自己的静态更新清单（nginx 托管 /update/latest.json）：
+     * {"version":"0.28.1407","apk":"Binguo-0.28.1407.apk","sha256":"...","size":123,"notes":"..."}
+     * 失败一律返回 null，由调用方当作「已是最新」，不回退 GitHub。
+     */
+    private JSONObject tryStatic() {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(STATIC_UPDATE).openConnection();
+            connection.setConnectTimeout(5_000);
+            connection.setReadTimeout(8_000);
+            connection.setRequestProperty("User-Agent", "Binguo-Updater");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            int code = connection.getResponseCode();
+            if (code < 200 || code >= 300) return null;
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            try (InputStream stream = connection.getInputStream()) {
+                byte[] buffer = new byte[16 * 1024];
+                int count;
+                while ((count = stream.read(buffer)) != -1) {
+                    out.write(buffer, 0, count);
+                    if (out.size() > 256 * 1024) return null;
+                }
+            }
+            JSONObject payload = new JSONObject(new String(out.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+            String version = payload.optString("version", "").trim();
+            if (!VERSION.matcher(version).matches()) return null;
+            String apk = payload.optString("apk", "").trim();
+            if (!apk.toLowerCase(Locale.ROOT).endsWith(".apk") || !matchesChannel(apk)) return null;
+            JSONObject manifest = new JSONObject();
+            manifest.put("versionName", version);
+            manifest.put("tag", "v" + version);
+            manifest.put("apk", apk);
+            manifest.put("sha256", payload.optString("sha256", ""));
+            manifest.put("size", payload.optLong("size", 0));
+            manifest.put("notes", payload.optString("notes", ""));
+            manifest.put("channel", channel());
+            manifest.put("source", "static");
+            manifest.put("url", STATIC_BASE + apk);
+            return manifest;
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
     private JSONObject tryServer(String localVersion) {
         String base = ServerConfig.get(context);
         if (base == null || base.isEmpty()) return null;
@@ -502,6 +564,8 @@ final class UpdateManager {
 
     /** 拉取 GitHub Releases API latest；404 表示还没发过版。 */
     private static JSONObject fetchRelease() throws Exception {
+        // 已停用 GitHub 兜底：官方包签名不同，下载完装不进去
+        if (!USE_GITHUB_FALLBACK) return null;
         HttpURLConnection connection = (HttpURLConnection) new URL(RELEASE_API).openConnection();
         connection.setConnectTimeout(15_000);
         connection.setReadTimeout(30_000);
