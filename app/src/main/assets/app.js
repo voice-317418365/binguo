@@ -1675,8 +1675,6 @@ async function submitDownloadTo(target, remoteId) {
 function renderSettings() {
   content.innerHTML = `<div class="settings-page"><button type="button" class="listing-back" data-back="1">${icon('back')} 返回我的</button><h1>设置</h1>
     ${window.renderAppearance ? window.renderAppearance() : ''}
-    ${privateMode() ? `<section><button type="button" class="settings-link" data-source-open><span><strong>私密内容源</strong><small data-source-summary>${esc((state.privateSite && state.privateSite.name) || '黄果')}</small></span>${icon('arrow')}</button></section>` : ''}
-    <section><button type="button" class="settings-link" data-proxy-open><span><strong>黄果网络通道</strong><small data-proxy-summary>${esc(proxySummaryText())}</small></span>${icon('arrow')}</button></section>
     <section><button type="button" class="settings-link" data-about-open><span><strong>关于彬果</strong><small>版本与更新</small></span>${icon('arrow')}</button></section></div>`;
   if (window.bindAppearance) window.bindAppearance();
   api('hot-update-status').then(window.hgHotUpdateStatus).catch(() => {});

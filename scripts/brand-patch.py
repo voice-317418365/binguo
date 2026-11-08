@@ -100,6 +100,26 @@ if "<small>项目地址 · GPL-3.0 开源</small>" in js:
     js = js.replace("<small>项目地址 · GPL-3.0 开源</small>", "<small>版本与更新</small>")
     report.append("设置页关于摘要: 已改为 版本与更新")
 
+# ---------- 4c. 隐藏私密内容源与黄果网络通道入口 ----------
+js, n1 = re.subn(
+    r'\n[ \t]*\$\{privateMode\(\) \? `<section>.*?data-source-open.*?</section>` : \'\'\}',
+    "",
+    js,
+    count=1,
+    flags=re.S,
+)
+js, n2 = re.subn(
+    r'\n[ \t]*<section><button type="button" class="settings-link" data-proxy-open>.*?</section>',
+    "",
+    js,
+    count=1,
+    flags=re.S,
+)
+if n1 or n2:
+    report.append("私密源入口: 已隐藏（内容源 %d，网络通道 %d）" % (n1, n2))
+else:
+    report.append("私密源入口: 未找到（可能已隐藏）")
+
 write(JS, js)
 
 html = read(HTML)
