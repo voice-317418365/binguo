@@ -13,6 +13,13 @@ const https = require('https');
 const hgSign = require('./hongguo-sign');
 
 const BASE = 'https://api5-normal-sinfonlineb.fqnovel.com';
+/**
+ * 账号类接口（资料/历史/收藏/预约）走另一套：
+ * host 是 sinfonlinea 而不是 b，aid 是红果的 513755 而不是番茄的 8662。
+ * 两者混用会得到 READ_HISTORY_GET_ERROR / 用户未登录。
+ */
+const ACCOUNT_BASE = 'https://api5-normal-sinfonlinea.fqnovel.com';
+const ACCOUNT_AID = '513755';
 const UA = 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 // 与 APK HongguoSigner 一致的固定设备参数（注册成功后 device_id/iid 会覆盖）
 const FIXED_DEVICE = {
@@ -142,7 +149,7 @@ function buildQuery(dev) {
 }
 
 /** 签名 POST：JS 签名生成 headers，POST 到 fqnovel；空响应冷却重试 + 换设备（≤3 轮）；gzip 自动解压 */
-async function signedPost(path, bodyObj) {
+async function signedPost(path, bodyObj, extraHeaders) {
   if (!registeredDevice) {
     registeredDevice = await registerDevice();
     if (!registeredDevice) currentDevice();
@@ -166,6 +173,7 @@ async function signedPost(path, bodyObj) {
       'Content-Type': 'application/json; charset=utf-8',
       'X-XS-From-Web': '0',
       'Sdk-Version': '2',
+      ...(extraHeaders || {}),
     };
     if (process.env.HG_DEBUG) console.log('[debug]', url, JSON.stringify(headers));
     const text = await new Promise((resolve, reject) => {
@@ -212,6 +220,61 @@ async function signedPost(path, bodyObj) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/** 构造带业务参数的 query string（设备参数 + 业务参数一起排序，签名才对得上） */
+function buildQueryWith(dev, extra) {
+  const params = {
+    ...FIXED_DEVICE,
+    aid: ACCOUNT_AID,
+    device_id: dev.device_id,
+    iid: dev.iid,
+    _rticket: String(Date.now()),
+    ...(extra || {}),
+  };
+  return Object.keys(params).sort().map(k => `${k}=${goEscape(String(params[k]))}`).join('&');
+}
+
+/**
+ * 签名 GET：账号类接口（阅读历史 / 收藏 / 预约）用这个。
+ * 这些路径只挂 GET，用 POST 打过去会被路由成 404，所以单独实现。
+ */
+async function signedGet(path, params, extraHeaders) {
+  if (!registeredDevice) {
+    registeredDevice = await registerDevice();
+    if (!registeredDevice) currentDevice();
+  }
+  const dev = currentDevice();
+  const rawQuery = buildQueryWith(dev, params);
+  const signHeaders = await callSigner(rawQuery, '', dev);
+  const url = `${ACCOUNT_BASE}${path}?${rawQuery}`;
+  const headers = {
+    ...signHeaders,
+    'User-Agent': UA,
+    'Accept-Encoding': 'gzip',
+    'Accept': 'application/json',
+    ...(extraHeaders || {}),
+  };
+  const r = await new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === 'https:' ? https : require('http');
+    const req = mod.request(u, { method: 'GET', headers, timeout: 20000 }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        let buf = Buffer.concat(chunks);
+        if ((res.headers['content-encoding'] || '').includes('gzip')) {
+          try { buf = require('zlib').gunzipSync(buf); } catch (e) { /* 保留原样 */ }
+        }
+        resolve({ code: res.statusCode, text: buf.toString('utf8') });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('请求超时')));
+    req.end();
+  });
+  if (r.code < 200 || r.code >= 300) throw new Error(`HTTP ${r.code}: ${r.text.slice(0, 200)}`);
+  try { return JSON.parse(r.text); } catch { throw new Error('响应解析失败: ' + r.text.slice(0, 200)); }
+}
 
 /** 详情：拿全集 vid 列表（与下载集序对齐：vids[i] = 第 i+1 集）。 */
 async function videoDetail(seriesId) {
@@ -444,4 +507,4 @@ async function fetchWebUrl(id, episode) {
   throw new Error('网页源播放地址获取失败');
 }
 
-module.exports = { videoDetail, videoModel, deriveKey, searchSeries, fetchWebUrl, registerDevice, currentDevice, buildQuery, goEscape, signedPost };
+module.exports = { videoDetail, videoModel, deriveKey, searchSeries, fetchWebUrl, registerDevice, currentDevice, buildQuery, goEscape, signedPost, signedGet };
