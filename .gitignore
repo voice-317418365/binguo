@@ -35,3 +35,7 @@ desktop/resources/mpv/*.dll
 
 # 热更新签名私钥，绝不入库
 keys/
+
+# 构建产物
+build/
+dist/
