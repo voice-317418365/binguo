@@ -969,3 +969,6 @@ html[data-theme=dark] .remote-test-result.fail,html[data-theme=dark] .dl-remote-
 .hg-status{min-height:18px}
 .hg-error{color:#aa3a28}
 .ghost-button{min-height:38px;padding:0 15px;border:1px solid var(--line);border-radius:calc(10px * var(--corner-scale,1));background:var(--panel);color:var(--text);font-size:13px}
+.cloud-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 12px;font-size:12px;color:var(--muted)}
+.cloud-toolbar button{min-height:32px;padding:0 12px;font-size:12px}
+.cloud-source{margin-top:14px;font-size:11px;line-height:1.7}

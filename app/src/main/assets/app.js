@@ -1168,7 +1168,8 @@ function renderCloudHistory() {
     return `<div class="empty-state">${esc(cloud.error)}<br><button type="button" class="ghost-button" data-hg-cloud-refresh style="margin-top:12px">重试</button></div>`;
   }
   const items = asArray(cloud.items);
-  if (!items.length) return '<div class="empty-state">云端还没有观看记录，先在红果 App 里看一集就会有</div>';
+  const toolbar = `<div class="cloud-toolbar"><span>来自红果账号的云端记录${cloud.loading ? '，正在更新…' : ''}</span><button type="button" class="ghost-button" data-hg-cloud-refresh>刷新</button></div>`;
+  if (!items.length) return `${toolbar}<div class="empty-state">云端还没有观看记录。在红果 App 里看一集，回来点「刷新」。</div>`;
   const cards = items.map(item => {
     const episode = Math.max(1, Number(item.episodeIndex || 0) + 1);
     const position = Number(item.position) || 0;
@@ -1178,7 +1179,8 @@ function renderCloudHistory() {
       <span class="history-poster poster loading"><span class="poster-letter">${esc(String(item.title || '影片').slice(0, 1))}</span><img data-cover="${esc(item.cover || '')}" alt=""></span><span class="history-copy"><span class="history-status">云端 · 第 ${episode} 集</span>
       <strong>${esc(item.title || '影片')}</strong><span class="progress"><i style="width:${percentage}%"></i></span><span class="history-hint">已看 ${Math.floor(position / 60000)} 分钟</span></span></button>`;
   }).join('');
-  return `<div class="history-list">${cards}</div>`;
+  return `${toolbar}<div class="history-list">${cards}</div>
+    <p class="appearance-note cloud-source">这些是红果账号在番茄阅读体系里记的进度（book_type=2），和官方 App「我的 → 浏览历史」的分组不一定完全一致。</p>`;
 }
 
 /** 只同步登录态，不发云端请求；设置页每次渲染都会跑一次。 */
@@ -4324,9 +4326,9 @@ document.addEventListener('click', async event => {
   if (event.target.closest('[data-hg-open-cloud]')) { closeHgLoginPop(); goLibrary('cloud'); return; }
   if (event.target.closest('[data-hg-cloud-refresh]')) {
     closeHgLoginPop();
-    state.cloud.items = null;
+    // 列表已经有内容时不置空，刷新期间保留旧记录，只在顶部提示"正在更新"
     if (state.route === 'library' && state.libraryTab === 'cloud') loadCloudHistory(true);
-    else goLibrary('cloud');
+    else { state.cloud.items = null; goLibrary('cloud'); }
     return;
   }
   // ---- 远程服务器配置 ----
