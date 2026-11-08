@@ -182,11 +182,16 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 .optJSONArray("data") ?: throw IOException("云端剧集资料格式已变化")
         val series =
             details.objects().associate { row ->
+                // 封面字段在这几个接口里换过名字，逐个兜底，别让海报整片空着
+                val cover =
+                    row.str("thumb_url").ifEmpty { row.str("horiz_thumb_url") }
+                        .ifEmpty { row.str("cover_url") }
+                        .ifEmpty { row.str("thumb_uri") }
                 row.str("book_id") to
                     Series(
                         row.str("book_id"),
                         row.str("book_name"),
-                        cleanUrl(row.str("thumb_url")),
+                        cleanUrl(cover),
                         row.str("abstract"),
                         episodeBadge(row),
                     )

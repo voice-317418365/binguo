@@ -95,7 +95,34 @@ final class HongguoRepository {
         return result;
     }
     String coverData(String url) throws Exception {
-        if (!url.startsWith("https://")) throw new IllegalArgumentException("无效封面地址");
+        // 云端历史的 thumb_url 有三种历史形态：http://、协议相对 //host/…、以及只给
+        // 资源路径（tos-cn-i-…/…）。红果的 CDN 都支持 https，所以统一转过去；
+        // 不转会被判成非法地址，表现就是"云端列表有剧名但海报全空"。
+        String raw = url == null ? "" : url.trim();
+        if (raw.isEmpty()) throw new IllegalArgumentException("无效封面地址");
+        java.util.List<String> candidates = new java.util.ArrayList<>(2);
+        if (raw.startsWith("//")) {
+            candidates.add("https:" + raw);
+        } else if (raw.startsWith("http://")) {
+            candidates.add("https://" + raw.substring(7));
+            candidates.add(raw);   // https 不通时退回原协议
+        } else if (raw.startsWith("https://")) {
+            candidates.add(raw);
+        } else {
+            candidates.add("https://p3-novel-sign.byteimg.com/" + (raw.startsWith("/") ? raw.substring(1) : raw));
+        }
+        Exception failure = null;
+        for (String target : candidates) {
+            try {
+                return fetchCover(target);
+            } catch (Exception error) {
+                failure = error;
+            }
+        }
+        throw failure == null ? new IllegalStateException("封面加载失败") : failure;
+    }
+
+    private String fetchCover(String url) throws Exception {
         Request request = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
         try (Response response = upstream.getHttp().newCall(request).execute()) {
             if (!response.isSuccessful() || response.body() == null) throw new IllegalStateException("封面加载失败");

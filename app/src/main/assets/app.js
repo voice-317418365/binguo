@@ -1128,6 +1128,7 @@ function renderLibrary() {
       <h2>我的收藏</h2>${bookmarks.length ? `<div class="search-grid library-bookmark-grid">${bookmarks.map(itemCard).join('')}</div>` : '<p class="library-no-match">没有匹配的收藏</p>'}</div>` : downloadsActive ? `
     <div class="segmented library-tabs" role="tablist" aria-label="我的片单分类"><button type="button" role="tab" data-library-tab="history" aria-selected="${false}" class="">观看历史</button>
     <button type="button" role="tab" data-library-tab="bookmarks" aria-selected="${false}" class="">我的收藏</button>
+    <button type="button" role="tab" data-library-tab="cloud" aria-selected="${false}" class="">云端</button>
     <button type="button" role="tab" data-library-tab="downloads" aria-selected="${true}" class="selected">我的下载</button></div>
     <div id="library-downloads"><p class="page-loading">正在加载…</p></div>` : `
     <div class="segmented library-tabs" role="tablist" aria-label="我的片单分类"><button type="button" role="tab" data-library-tab="history" aria-selected="${historyActive}" class="${historyActive ? 'selected' : ''}">观看历史</button>
@@ -1144,7 +1145,7 @@ function renderLibrary() {
 }
 
 /* ------------------------ 红果账号（官方云端观看历史） ------------------------
- * 登录走字节 passport 的扫码接口：本地拿到二维码，用户存到相册后用抖音 App 的
+ * 登录走字节 passport 的扫码接口：本地拿到二维码，用户存到相册后用红果短剧 App 的
  * 「扫一扫 → 右上角相册」扫它确认。之所以绕这么一圈，是因为红果的 web 登录页对
  * 第三方整体封死了（error_code 16），而手机端自己扫自己又做不到。
  * 凭据加密存本地，不上传任何服务器。
@@ -2077,7 +2078,7 @@ window.__veyraAboutBack = () => { if (aboutPop && !aboutPop.hidden) { closeAbout
 window.__veyraAboutOpen = () => !!(aboutPop && !aboutPop.hidden);
 
 // ================= 红果账号（扫码登录 + 云端观看历史）=================
-// 手机端没法自己扫自己：二维码先存进相册，用户再用抖音的「扫一扫 → 相册」扫它。
+// 手机端没法自己扫自己：二维码先存进相册，用户再用红果短剧 App 的「扫一扫 → 相册」扫它。
 // 所以这里有一步必须讲清楚，不然用户会卡在"码在哪"。
 var hgLoginPop = null;
 var hgPollTimer = 0;
@@ -2096,16 +2097,16 @@ function buildHgLoginHtml() {
   if (cloud.qr) {
     const status = cloud.loginError
       ? `<span class="hg-error">${esc(cloud.loginError)}</span>`
-      : esc(cloud.loginStatus || '等待抖音扫码确认…');
+      : esc(cloud.loginStatus || '等待红果短剧 App 扫码确认…');
     return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true">${head}
       <div class="hg-qr"><img src="data:image/png;base64,${cloud.qr}" alt="登录二维码"></div>
-      <p class="appearance-note">点下面的按钮把二维码<strong>存进相册</strong>，再打开 <strong>抖音 → 扫一扫 → 右上角「相册」</strong>，选中刚存的那张图，在抖音里点确认，然后回到这里。</p>
+      <p class="appearance-note">点下面的按钮把二维码<strong>存进相册</strong>，再打开 <strong>红果短剧 App → 扫一扫 → 右上角「相册」</strong>，选中刚存的那张图，在 App 里点确认，然后回到这里。</p>
       <div class="hg-actions"><button type="button" data-hg-save>保存二维码到相册</button>
       <button type="button" data-hg-restart>换一张</button></div>
       <p class="appearance-note hg-status">${status}</p></div>`;
   }
   return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true">${head}
-    <p class="appearance-note">红果用的是<strong>抖音账号</strong>。扫码登录后，这里会显示你在官方 App 里看过的短剧，换设备也能接着看。</p>
+    <p class="appearance-note">红果账号可以直接在<strong>红果短剧 App</strong> 里登录。扫码后这里会显示你在官方 App 里看过的短剧，换设备也能接着看。</p>
     ${cloud.loginError ? `<p class="appearance-note hg-error">${esc(cloud.loginError)}</p>` : ''}
     <div class="hg-actions"><button type="button" data-hg-start>获取登录二维码</button></div></div>`;
 }
@@ -2163,7 +2164,7 @@ async function startHgLogin() {
   try {
     const reply = await api('hg-login-start');
     cloud.qr = (reply && reply.qrcode) || '';
-    cloud.loginStatus = '等待抖音扫码确认…';
+    cloud.loginStatus = '等待红果短剧 App 扫码确认…';
     const expires = Number(reply && reply.expiresIn) || 180;
     cloud.qrDeadline = Date.now() + Math.max(60, expires) * 1000;
     repaintHgLogin();
@@ -2174,7 +2175,7 @@ async function startHgLogin() {
   }
 }
 
-/** 每 2.5 秒问一次抖音那边确认了没有；过期就停，网络抖动继续等。 */
+/** 每 2.5 秒问一次官方那边确认了没有；过期就停，网络抖动继续等。 */
 function scheduleHgPoll(deadline) {
   stopHgPoll();
   const tick = async () => {
@@ -2221,9 +2222,9 @@ async function saveHgQr() {
   if (!cloud.qr) return;
   try {
     await api('hg-qr-save', { data: cloud.qr });
-    toast('已保存到相册，去抖音「扫一扫 → 相册」里选它');
+    toast('已保存到相册，去红果短剧 App「扫一扫 → 相册」里选它');
   } catch (error) {
-    toast((error && error.message) || '保存失败，可以先截屏再用抖音扫截图', true);
+    toast((error && error.message) || '保存失败，可以先截屏再用红果短剧 App 扫截图', true);
   }
 }
 
