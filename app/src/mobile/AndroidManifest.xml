@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 手机/平板专属：扫码登录电视。电视包没有相机，这些内容不进 TV 产物。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <application>
+        <!-- 同样不锁方向：平板上扫码框跟着屏幕走，不再是一条竖窗口 -->
+        <activity
+            android:name=".QrScanActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+    </application>
+</manifest>

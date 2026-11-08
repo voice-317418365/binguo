@@ -1,0 +1,14 @@
+services:
+  veyra-backend:
+    image: gybeyond/veyra-backend:latest
+    container_name: veyra
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - PORT=8888
+      - DATA_DIR=/data
+      - ADMIN_PASSWORD=change-me   # WebUI 管理台密码（务必改为强密码；勿把真实密码提交进仓库）
+    volumes:
+      - ./data:/data            # 用户/任务/头像等数据
+      - /volume1/gy/veyra:/video  # NAS 下载合并产物（固定 /video 挂载）

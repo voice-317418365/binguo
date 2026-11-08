@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-material="soft" data-color="blue" data-corner="default">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="color-scheme" content="light dark">
+  <title>Veyra</title>
+  <!-- Sunny UI 令牌层必须排在 app.css 前面：它定义 --bg/--text/--accent/--mat-* ，
+       app.css 只消费，不定义。顺序反了材质和配色就不生效。 -->
+  <link rel="stylesheet" href="sunny-theme.css">
+  <link rel="stylesheet" href="app.css">
+  <!-- 设备形态必须在样式生效前确定：data-device=phone/tablet/tv，大屏规则只认这个属性，
+       手机（phone）不命中 device-layout.css 里的任何一条。 -->
+  <script src="device-mode.js"></script>
+  <link rel="stylesheet" href="device-layout.css">
+  <link rel="stylesheet" href="relay-input.css">
+  <!-- 电视构建走 ?lite=1：追加轻量样式表（关玻璃/模糊/阴影/动画 + 老 WebView 属性兜底）。
+       手机与平板不带这个参数，__VEYRA_LITE 为 false，下面这条 link 根本不会写进文档。 -->
+  <script>
+  (function () {
+    var lite = false;
+    try { lite = /[?&]lite=1/.test(location.search); } catch (e) { }
+    window.__VEYRA_LITE = lite;
+    if (lite) document.write('<link rel="stylesheet" href="tv-lite.css">');
+  })();
+  </script>
+  <!-- 冷启动记忆：上次退出时停在刷剧页 → 在 app.js 还没跑起来之前就把首页内容藏掉、
+       垫上上次那部剧的海报。否则第一帧是传统首页（骨架 → 内容），等首页数据回来
+       再跳刷剧页 —— 看着就是「闪一下传统首页」。撤掉的时机在 app.js 里
+       （原生海报真正画出来之后），撤不掉也有 4s 兜底。 -->
+  <script>
+  (function () {
+    try {
+      var raw = JSON.parse(localStorage.getItem('veyra.binge.v2') || 'null');
+      if (!raw || !raw.on || !raw.items || !raw.items.length) return;
+      var i = Math.max(0, Math.min(raw.index || 0, raw.items.length - 1));
+      var cover = raw.items[i] && raw.items[i].cover;
+      var root = document.documentElement;
+      root.setAttribute('data-binge-boot', '1');
+      if (cover) root.style.setProperty('--binge-boot-cover', 'url("' + String(cover).replace(/["\\]/g, '') + '")');
+      var el = document.createElement('div');
+      el.id = 'binge-boot-cover';
+      el.setAttribute('aria-hidden', 'true');
+      document.addEventListener('DOMContentLoaded', function () {
+        document.body.insertBefore(el, document.body.firstChild);
+      });
+    } catch (e) { }
+  })();
+  </script>
+</head>
+<body>
+  <!-- 液态玻璃由 dock-refract.js 统一挂载：Sunny 圆角 SDF/circleMap 只折射边缘，
+       中心文字和图标独立绘制；底栏、搜索、刷剧卡片、预览和弹窗共享同一外观参数。 -->
+  <div id="app">
+    <header class="app-top">
+      <button id="account-avatar" class="account-avatar" type="button" aria-label="登录账号">
+        <img class="account-avatar-default" src="user.svg" alt="">
+        <img id="account-avatar-image" alt="" hidden>
+        <span id="account-role-badge" class="account-role-badge" hidden></span>
+      </button>
+      <form id="search-form" class="search-form" role="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5"/></svg>
+        <input id="search-input" class="search-input" type="search" placeholder="搜索剧名或 #标签" autocomplete="off" aria-label="搜索剧名或标签">
+      </form>
+      <button id="header-settings" class="header-settings" type="button" aria-label="设置" hidden><img src="settings.svg" alt=""></button>
+    </header>
+    <!-- v0.18.105：搜索历史/联想面板移出 .search-form（form 的 backdrop-filter 创建层叠上下文，会截断子元素的
+         backdrop 采样），放到 #app 层作为独立浮层：backdrop root 直达页面，能采样到 #scroll 滚动内容，液态玻璃折射才生效 -->
+    <div id="search-suggest" class="search-suggest" hidden></div>
+    <main id="scroll"><div id="content"></div></main>
+    <!-- 刷剧浮层：首页的一种形态。视频区透明（原生视频透出），卡片用与弹窗同款真·液态玻璃。
+         真底栏 #dock 与 #binge-fab 仍是首页全局元素，一字不动。 -->
+    <div id="binge" hidden>
+      <div class="binge-card" id="binge-card">
+        <div class="binge-main">
+          <div class="binge-poster-box" id="binge-poster-box" hidden>
+            <img id="binge-poster" alt="">
+          </div>
+          <div class="binge-copy">
+            <h2 class="binge-title" id="binge-title"></h2>
+            <p class="binge-desc" id="binge-desc"></p>
+          </div>
+        </div>
+        <div class="binge-actions">
+          <button class="binge-detail" id="binge-detail-btn" type="button">查看详情</button>
+          <button class="binge-full" id="binge-full-btn" type="button">观看全集</button>
+        </div>
+      </div>
+      <div class="binge-msg" id="binge-msg" hidden></div>
+    </div>
+    <div id="compact-category" aria-hidden="true"></div>
+    <nav id="dock" aria-label="主导航">
+      <i id="dock-blob" aria-hidden="true"><b></b></i>
+      <button type="button" data-nav="home" class="active"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg></span><span>首页</span></button>
+      <button type="button" data-nav="adult"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 10h18M8 5l3 5m3-5 3 5"/></svg></span><span>剧场</span></button>
+      <button type="button" data-nav="ai"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8zM19 17l.6 1.4L21 19l-1.4.6L19 21l-.6-1.4L17 19l1.4-.6z"/></svg></span><span>AI</span></button>
+      <button type="button" data-nav="library"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 21c.5-4.3 3-6.5 7.5-6.5s7 2.2 7.5 6.5"/></svg></span><span>我的</span></button>
+    </nav>
+    <!-- 刷剧模式悬浮按钮：只在公开模式首页可见，点击进入/退出刷剧（首页的一种形态） -->
+    <button id="binge-fab" type="button" aria-label="刷剧模式" hidden>
+      <span class="binge-fab-icon binge-fab-play" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 3 4 4-4 4"/><path d="M21 7H7"/><path d="m7 21-4-4 4-4"/><path d="M3 17h14"/></svg></span>
+      <span class="binge-fab-icon binge-fab-home" aria-hidden="true" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg></span>
+    </button>
+    <div id="toast-host" role="status" aria-live="polite"></div>
+    <div id="auth-overlay" hidden>
+      <section class="auth-panel" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <h2 id="auth-title">登录应用账号</h2>
+        <p id="auth-subtitle">登录后同步收藏和观看历史</p>
+        <!-- 扫码登录面板：电视端只走这一条路；手机/平板是「扫码登录」标签页（用另一台已登录设备授权） -->
+        <div id="tv-login" hidden>
+          <div id="tv-login-code" class="tv-login-code" hidden></div>
+          <button id="tv-login-start" class="auth-submit" type="button">显示登录二维码</button>
+          <p id="tv-login-note" class="tv-login-note" hidden></p>
+        </div>
+        <div class="auth-tabs" role="tablist"><button type="button" data-auth-mode="login" class="selected">登录</button><button type="button" data-auth-mode="register">注册</button><button type="button" data-auth-mode="scan">扫码登录</button></div>
+        <form id="auth-form">
+          <label for="auth-server">服务器地址</label><input id="auth-server" name="server" autocomplete="off" autocapitalize="none" spellcheck="false" required placeholder="https://你的后端地址:端口">
+          <label for="auth-username">账号</label><input id="auth-username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="24" required placeholder="字母、数字或下划线">
+          <label for="auth-password">密码</label><input id="auth-password" name="password" type="password" autocomplete="current-password" required placeholder="不限长度">
+          <label for="auth-code" id="auth-code-label" hidden>动态码</label><input id="auth-code" name="code" autocomplete="off" maxlength="6" placeholder="6 位动态码" hidden>
+          <p id="auth-error" class="auth-error" role="alert" hidden></p>
+          <button id="auth-submit" class="auth-submit" type="submit" aria-live="polite">登录</button>
+        </form>
+        <p class="auth-footnote">忘记密码请联系管理员重置。</p>
+      </section>
+    </div>
+    <div id="unlock-overlay" hidden>
+      <section class="auth-panel" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
+        <button id="unlock-close" class="auth-close" type="button" aria-label="关闭">×</button>
+        <h2 id="unlock-title">验证动态码</h2>
+        <form id="unlock-form">
+          <label for="unlock-password">动态码</label>
+          <input id="unlock-password" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" placeholder="输入 6 位动态码" required>
+          <p id="unlock-error" class="auth-error" role="alert" hidden></p>
+          <p class="auth-footnote">动态码每 30 秒更换，从后端状态页获取</p>
+          <button class="auth-submit" type="submit">进入</button>
+        </form>
+      </section>
+    </div>
+    <div id="confirm-overlay" hidden>
+      <section class="confirm-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-message"></p>
+        <div class="confirm-buttons"><button id="confirm-cancel" type="button">取消</button><button id="confirm-accept" type="button">清空</button></div>
+      </section>
+    </div>
+    <div id="download-overlay" hidden>
+      <section class="download-panel" role="dialog" aria-modal="true" aria-labelledby="download-title">
+        <h2 id="download-title">下载</h2>
+        <div id="download-sheet"></div>
+      </section>
+    </div>
+    <div id="update-overlay" hidden>
+      <section class="update-panel" role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <h2 id="update-title">发现新版本</h2>
+        <p id="update-version"></p>
+        <div id="update-notes" hidden></div>
+        <div id="update-progress" hidden><div class="update-progress-label"><span>正在下载安装包</span><strong id="update-percent">0%</strong></div><div class="update-track"><i id="update-fill"></i></div></div>
+        <div class="update-buttons"><button id="update-later" type="button">取消</button><button id="update-download" type="button">立即下载</button></div>
+      </section>
+    </div>
+  </div>
+  <div id="age-gate" hidden>
+    <div class="age-panel" role="dialog" aria-modal="true" aria-labelledby="age-title">
+      <div class="age-symbol">18+</div>
+      <h1 id="age-title">请确认你的年龄</h1>
+      <p>本应用展示成人内容，仅供已达到所在地法定年龄的用户使用。</p>
+      <button id="age-confirm" type="button">我已年满 18 周岁</button>
+      <button id="age-exit" type="button">退出应用</button>
+    </div>
+  </div>
+  <!-- 脚本分流：
+       普通构建（手机/平板）—— 与原来完全一致，逐条加载。
+       电视构建（?lite=1）  —— 只加载跑得动、用得上的：先补 ES5 兜底，再跑降级后的 app.es5.js。
+                              卡片转场、玻璃透镜、外观主题这四套特效脚本整体不进电视端。 -->
+  <script>
+  (function () {
+    function load(src) { document.write('<script src="' + src + '"><\/script>'); }
+    if (window.__VEYRA_LITE) {
+      load('runtime.js');
+      load('intro.js');
+      load('tv-polyfill.js');
+      load('app.es5.js');
+      load('vendor/qrcode.js');
+      load('relay-input.js');
+      load('tv-focus.js');
+      return;
+    }
+    load('vendor/rematrix-0.2.2.js');
+    load('vendor/flip-toolkit-7.2.6.js');
+    load('card-transition.js');
+    load('runtime.js');
+    load('intro.js');
+    load('hot-runtime.js');
+    load('appearance.js');
+    load('app.js');
+    load('vendor/qrcode.js');
+    load('relay-input.js');
+    load('tv-focus.js');
+    load('dock-glass.js');
+    load('dock-refract.js');
+    load('seg-glass.js');
+  })();
+  </script>
+</body>
+</html>

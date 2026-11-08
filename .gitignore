@@ -1,0 +1,34 @@
+.gradle/
+.idea/
+build/
+app/build/
+local.properties
+*.iml
+
+merge-*.log
+.signing/
+outputs/
+
+archives/
+
+verification/
+
+qa/*-browser/
+
+qa/
+*.log
+__pycache__/
+.local-docs/
+Android Version/
+server/node_modules/
+server/data/
+chengzi-data/
+app/libs/
+
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+
+# mpv 播放内核二进制（几十 MB，打包前用 npm run fetch:mpv 拉取）
+desktop/resources/mpv/*.exe
+desktop/resources/mpv/*.dll

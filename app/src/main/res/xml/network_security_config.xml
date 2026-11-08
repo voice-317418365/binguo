@@ -1,0 +1,10 @@
+<network-security-config>
+    <!-- 明文全放行：后端地址由用户在 App 内自填（http/https 均可，如内网 NAS http://192.168.1.199:8899），
+         无法预知后端域名/IP 加白名单，故 base-config 直接允许明文；红果视频 CDN 域名保留放行。 -->
+    <base-config cleartextTrafficPermitted="true"/>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">douyinvod.com</domain>
+        <domain includeSubdomains="true">byteicdn.com</domain>
+        <domain includeSubdomains="true">byteimg.com</domain>
+    </domain-config>
+</network-security-config>

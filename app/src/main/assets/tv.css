@@ -1,0 +1,846 @@
+/* ===================================================================
+   Veyra 电视端样式
+   -------------------------------------------------------------------
+   ⚠ 老内核禁区（电视盒子常年停在 Chrome 61 上下）：
+     · 不用 vw / vh / min() / clamp() —— 会让整条 calc 失效
+     · 不用 gap / row-gap / column-gap —— 这三个是 Chrome 66 才加的别名，
+       老内核只认 grid-gap / grid-row-gap / grid-column-gap。
+       上一版就是踩了这个：海报墙、详情左右栏、选集按钮全部没有间距，
+       剧集糊成一坨、海报贴着简介。凡是间距一律写 grid-*。
+     · 不用 backdrop-filter / filter / 大阴影
+   1rem = 10px @1920 设计稿，html 的 font-size 由 head 脚本按视口算。
+   =================================================================== */
+
+:root{
+  /* 主题黑（默认） */
+  --bg:#17181A;
+  --bg-2:#212226;
+  --panel:#232528;
+  --panel-2:rgba(255,255,255,.20);
+  --text:#E7E9EB;
+  --muted:rgba(231,233,235,.66);
+  --accent:#c89b3c;
+  --accent-ink:#231a06;
+  --accent-bright:#ffd277;
+  --focus:#FFFFFF;
+  --halo:rgba(8,10,13,.92);
+  --glow:rgba(200,155,60,.22);
+  --pill:rgba(255,255,255,.12);
+  --rail-bg:rgba(255,255,255,.07);
+  --rail-ink:#E7E9EB;
+  --chip-bg:rgba(255,255,255,.10);
+  --chip-ink:#E7E9EB;
+  --scrim:rgba(8,10,13,.62);
+  --drawer:rgba(6,8,11,.60);
+  --rail-panel:#17181A;
+}
+
+/* ---------------- 主题 ----------------
+   八套底色就是面板上那八个色（#FFFFFF / #FF6699 / #17181A / #F44336 /
+   #FFC107 / #8BC34A / #2196F3 / #9C27B0），整页直接铺这个色，
+   不再压暗、不再叠灰黑遮罩。
+   文字色按配色表走：简洁白用 #18191C，其余七套一律 #FFFFFF。 */
+body[data-tv-theme="pink"]{
+  --bg:#FF6699;--bg-2:#FF7CA6;--panel:rgba(0,0,0,.12);--panel-2:rgba(0,0,0,.22);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.82);
+  --accent:#8E0B3F;--accent-ink:#FFFFFF;--accent-bright:#FFD1E1;
+  --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
+  --glow:rgba(255,255,255,.40);--pill:rgba(0,0,0,.14);
+  --rail-bg:rgba(0,0,0,.14);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(0,0,0,.15);--chip-ink:#FFFFFF;
+  --scrim:rgba(255,250,252,.80);--drawer:rgba(255,238,245,.70);
+  --rail-panel:#FF5C93;
+}
+body[data-tv-theme="red"]{
+  --bg:#F44336;--bg-2:#F55B4F;--panel:rgba(0,0,0,.12);--panel-2:rgba(0,0,0,.22);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.82);
+  --accent:#6E0C06;--accent-ink:#FFFFFF;--accent-bright:#FFC9C4;
+  --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
+  --glow:rgba(255,255,255,.34);--pill:rgba(0,0,0,.14);
+  --rail-bg:rgba(0,0,0,.14);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(0,0,0,.15);--chip-ink:#FFFFFF;
+  --scrim:rgba(255,249,248,.80);--drawer:rgba(255,233,231,.70);
+  --rail-panel:#EC3B2E;
+}
+body[data-tv-theme="yellow"]{
+  --bg:#FFC107;--bg-2:#FFCB2B;--panel:rgba(0,0,0,.10);--panel-2:rgba(0,0,0,.20);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.88);
+  --accent:#7A4E00;--accent-ink:#FFFFFF;--accent-bright:#FFEBA8;
+  --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
+  --glow:rgba(255,255,255,.40);--pill:rgba(0,0,0,.14);
+  --rail-bg:rgba(0,0,0,.12);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(0,0,0,.13);--chip-ink:#FFFFFF;
+  --scrim:rgba(255,252,241,.82);--drawer:rgba(255,247,220,.72);
+  --rail-panel:#F5B800;
+}
+body[data-tv-theme="green"]{
+  --bg:#8BC34A;--bg-2:#97C95C;--panel:rgba(0,0,0,.10);--panel-2:rgba(0,0,0,.20);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.85);
+  --accent:#255A10;--accent-ink:#FFFFFF;--accent-bright:#DDF5C9;
+  --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
+  --glow:rgba(255,255,255,.36);--pill:rgba(0,0,0,.14);
+  --rail-bg:rgba(0,0,0,.12);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(0,0,0,.13);--chip-ink:#FFFFFF;
+  --scrim:rgba(251,255,247,.80);--drawer:rgba(240,250,230,.72);
+  --rail-panel:#7FBA3C;
+}
+body[data-tv-theme="blue"]{
+  --bg:#2196F3;--bg-2:#389FF4;--panel:rgba(0,0,0,.12);--panel-2:rgba(0,0,0,.22);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.84);
+  --accent:#08335F;--accent-ink:#FFFFFF;--accent-bright:#CFE4FF;
+  --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
+  --glow:rgba(255,255,255,.34);--pill:rgba(0,0,0,.14);
+  --rail-bg:rgba(0,0,0,.13);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(0,0,0,.14);--chip-ink:#FFFFFF;
+  --scrim:rgba(248,252,255,.80);--drawer:rgba(232,244,255,.72);
+  --rail-panel:#1C8CE8;
+}
+body[data-tv-theme="purple"]{
+  --bg:#9C27B0;--bg-2:#A836BA;--panel:rgba(0,0,0,.14);--panel-2:rgba(255,255,255,.24);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.80);
+  --accent:#FFD9F2;--accent-ink:#3A0B44;--accent-bright:#F0C7FF;
+  --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
+  --glow:rgba(255,255,255,.26);--pill:rgba(0,0,0,.16);
+  --rail-bg:rgba(0,0,0,.16);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(0,0,0,.16);--chip-ink:#FFFFFF;
+  --scrim:rgba(60,14,70,.68);--drawer:rgba(30,6,36,.60);
+  --rail-panel:#96249F;
+}
+/* 高性能模式：底色压到近黑，让海报透出来；其余变量跟主题黑一致。
+   背景图由 body[data-backdrop="poster"] 打开，低模糊，看得清海报内容。 */
+body[data-tv-theme="cinema"]{
+  --bg:#0B0D10;--bg-2:#15191E;--panel:rgba(255,255,255,.09);--panel-2:rgba(255,255,255,.16);
+  --text:#FFFFFF;--muted:rgba(255,255,255,.74);
+  --accent:#c89b3c;--accent-ink:#231a06;--accent-bright:#ffd277;
+  --focus:#FFFFFF;--halo:rgba(8,10,13,.92);
+  --glow:rgba(200,155,60,.16);--pill:rgba(255,255,255,.12);
+  --rail-bg:rgba(255,255,255,.07);--rail-ink:#FFFFFF;
+  --chip-bg:rgba(255,255,255,.10);--chip-ink:#FFFFFF;
+  --scrim:rgba(8,10,13,.62);--drawer:rgba(6,8,11,.60);
+  --rail-panel:#12161B;
+}
+/* 简洁白：唯一一套白底深字 */
+body[data-tv-theme="clean"]{
+  --bg:#FFFFFF;--bg-2:#F5F7FA;--panel:rgba(20,24,29,.06);--panel-2:rgba(20,24,29,.16);
+  --text:#18191C;--muted:#5F6A76;
+  --accent:#1F6FEB;--accent-ink:#FFFFFF;--accent-bright:#7FB0FF;
+  --focus:#1F6FEB;--halo:rgba(255,255,255,.92);
+  --glow:rgba(31,111,235,.10);--pill:rgba(20,24,29,.08);
+  --rail-bg:rgba(20,24,29,.06);--rail-ink:#3C4653;
+  --chip-bg:rgba(20,24,29,.07);--chip-ink:#3C4653;
+  --scrim:rgba(255,255,255,.82);--drawer:rgba(248,250,252,.78);
+  --rail-panel:#FFFFFF;
+}
+
+/* 彩色底 + 白字：加一层极淡的暗投影，远看不会糊进底色里。
+   白底深字（简洁白）和深底（主题黑/罗兰紫）本身对比够，不加。 */
+body[data-tv-theme="pink"] #stage,
+body[data-tv-theme="red"] #stage,
+body[data-tv-theme="yellow"] #stage,
+body[data-tv-theme="green"] #stage,
+body[data-tv-theme="blue"] #stage{text-shadow:0 1px 3px rgba(0,0,0,.38)}
+
+/* 详情页：背景换成海报模糊，底色一定是深的 —— 文字固定浅色，
+   否则白底主题下会出现「深字压深底」直接看不见。 */
+body[data-backdrop="poster"]{
+  --bg:#0d1013;--bg-2:#161c23;
+  --text:#F2F3F5;--muted:rgba(255,255,255,.70);
+  --panel:rgba(255,255,255,.10);--panel-2:rgba(255,255,255,.24);
+  --chip-bg:rgba(255,255,255,.14);--chip-ink:#F2F3F5;
+  --accent:var(--accent-bright,#ffd277);--accent-ink:#14181d;
+  --focus:#FFFFFF;--halo:rgba(8,10,13,.92);
+  --glow:rgba(255,210,119,.18);--pill:rgba(255,255,255,.14);
+  --rail-bg:rgba(255,255,255,.10);--rail-ink:#F2F3F5;
+  --scrim:rgba(8,10,13,.62);--drawer:rgba(4,6,9,.56);
+  --rail-panel:#0b0e13;
+}
+
+[hidden]{display:none !important}
+/* 浏览器默认的 :focus 环会套在整张卡上（连剧名一起框住），
+   焦点样式统一由 .is-focused 负责，这里把默认环关掉 */
+[data-focusable]:focus{outline:none}
+*{box-sizing:border-box}
+
+html{font-size:10px;height:100%}
+html,body{
+  margin:0;padding:0;height:100%;overflow:hidden;
+  background:var(--bg);color:var(--text);
+  font-family:"Noto Sans CJK SC","PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+body{position:relative}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+input{font:inherit}
+img{display:block;border:0}
+
+#app{position:relative;width:100%;height:100%;overflow:hidden}
+
+/* ---------------- 背景 ----------------
+   两种模式，由 body[data-backdrop] 切换：
+     theme  —— 首页/搜索/我的：主题渐变，没有图片、没有模糊；
+     poster —— 详情页：当前这部剧的封面放大 + 高斯模糊（只在进详情时换一次）。
+   以前首页也用海报模糊，每按一下方向键就换一张大图重做全屏模糊，
+   电视盒子上就是一次全屏重绘 —— 选中框卡顿的主因。 */
+#tv-bg{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:0;
+  overflow:hidden;
+  background:
+    radial-gradient(120% 100% at 10% 0%,var(--glow) 0%,rgba(0,0,0,0) 62%),
+    linear-gradient(165deg,var(--bg-2) 0%,var(--bg) 56%,var(--bg) 100%);
+}
+#tv-bg img{
+  position:absolute;left:-4%;top:-4%;width:108%;height:108%;
+  object-fit:cover;opacity:0;
+  /* 极低模糊：22px 只剩一团色块，9px 还是糊。3px 基本是"轻微柔化"，
+     海报上的字和脸都看得清。唯一用 filter 的地方，其余一律禁止。 */
+  -webkit-filter:blur(3px) saturate(1.04);
+  filter:blur(3px) saturate(1.04);
+  transform:translateZ(0);
+  transition:opacity .25s linear;
+}
+#tv-bg img.is-dim{opacity:0}
+body[data-backdrop="poster"] #tv-bg{background:#0d1013}
+body[data-backdrop="poster"] #tv-bg img{opacity:1}
+/* 遮罩只压左边（标题压在那边）和底部，中间露出来 */
+#tv-bg .veil{
+  position:absolute;left:0;right:0;top:0;bottom:0;
+  opacity:0;transition:opacity .25s linear;
+  background:
+    linear-gradient(90deg,rgba(8,10,13,.62) 0%,rgba(8,10,13,.30) 34%,rgba(8,10,13,.12) 100%),
+    linear-gradient(180deg,rgba(8,10,13,.20) 0%,rgba(8,10,13,0) 34%,rgba(8,10,13,.50) 100%);
+}
+body[data-backdrop="poster"] #tv-bg .veil{opacity:1}
+
+/* 侧栏呼出 = 抽屉打开：整页压暗，焦点只在左边那一列图标上。
+   只压左边一条的话，图标会直接叠在标题和分类条上，看起来像没对齐。 */
+/* 不做整屏遮罩：主界面颜色保持不变，只靠侧栏自己亮一档区分层次 */
+#rail-veil{display:none}
+
+/* ---------------- 左侧图标导航（默认收起） ----------------
+   内容页占满整屏；侧栏平时整个滑出屏幕外，只有遥控器在最左一列继续按左
+   才把它拉出来。拉出来时焦点直接落到当前页的图标上，按右/返回收回。 */
+#rail{
+  position:absolute;left:0;top:0;bottom:0;width:9.4rem;z-index:5;
+  padding:4.4rem 0 2.6rem;
+  display:flex;flex-direction:column;align-items:center;
+  background:transparent;
+  transform:translateX(-140%);opacity:0;pointer-events:none;
+  transition:transform .18s ease-out,opacity .18s linear;
+}
+/* 呼出时是一块不透明的竖栏：图标不会再压在标题/海报上重影 */
+body.rail-open #rail{
+  transform:translateX(0);opacity:1;pointer-events:auto;
+  background:var(--rail-panel);
+  /* 叠一层 10% 白把侧栏提亮，比主界面亮一点点就够，不再压暗整页 */
+  background-image:linear-gradient(rgba(255,255,255,.10),rgba(255,255,255,.10));
+  box-shadow:0 0 3rem 0 rgba(0,0,0,.26);
+}
+.rail-item{
+  width:5.2rem;height:5.2rem;border-radius:1.5rem;
+  margin-bottom:1.2rem;
+  display:flex;align-items:center;justify-content:center;
+  color:var(--rail-ink);background:var(--rail-bg);
+  transition:background .12s linear,color .12s linear;
+}
+.rail-item svg{width:2.8rem;height:2.8rem;fill:currentColor}
+.rail-item.is-active{color:var(--text);background:var(--chip-bg)}
+.rail-item.is-focused{color:var(--accent-ink);background:var(--accent)}
+
+/* 左下角账号：只放头像，点开账号面板 */
+.rail-account{
+  margin-top:auto;width:5.2rem;height:5.2rem;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--rail-bg);
+  overflow:hidden;
+}
+.rail-account .avatar{
+  display:block;width:100%;height:100%;line-height:5.2rem;
+  text-align:center;font-size:2.2rem;font-weight:700;color:var(--text);
+  white-space:nowrap;overflow:hidden;
+}
+/* 手机端设置的头像：铺满整个圆 */
+.rail-account .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.rail-account.is-focused{background:var(--accent);outline:none;box-shadow:0 0 0 .3rem var(--focus)}
+.rail-account.is-focused .avatar{color:var(--accent-ink)}
+
+/* ---------------- 主区域 ----------------
+   侧栏收起后内容铺满整屏，只留 4.6rem 的左边距给标题呼吸。 */
+#stage{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:2;
+  overflow-y:auto;overflow-x:hidden;
+  padding:4.2rem 5.2rem 8rem 4.6rem;
+  scrollbar-width:none;
+}
+#stage::-webkit-scrollbar{display:none}
+
+/* 海报窗口模式（首页 / 我的）：
+   海报区只留「一整行 + 下一行露出 1/5」的高度，遥控器上下移动时窗口内按整行
+   滚动 —— 下面一行顶上来，上面一行退出去。窗口外的 #stage 不再滚动，
+   免得焦点移动时屏幕整体漂移、把刚对齐的那一行又带歪。 */
+body.page-windowed #stage{overflow:hidden}
+.grid.is-window{
+  overflow-y:auto;overflow-x:hidden;
+  scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+}
+.grid.is-window::-webkit-scrollbar{display:none}
+
+.page-title{
+  font-size:3.2rem;font-weight:700;
+  margin:0 0 2.2rem;letter-spacing:.01em;
+}
+.section{margin-bottom:4rem}
+.section-head{
+  display:flex;align-items:baseline;
+  margin-bottom:1.4rem;
+}
+.section-head h2{font-size:2.5rem;margin:0;font-weight:700}
+.section-head span{font-size:1.7rem;color:var(--muted);margin-left:1.2rem}
+.empty{
+  font-size:2.1rem;color:var(--muted);
+  padding:6rem 0;line-height:1.6;
+}
+
+/* ---------------- 海报墙 ----------------
+   固定 6 列：不再用 auto-fill 猜列数（30rem 的下限在不同分辨率下会算出 4/5 列，
+   右边还会被切掉一截）。repeat(6, minmax(0,1fr)) 是硬约束 —— 一屏永远 6 张，
+   每张宽度正好是可用宽度的 1/6，绝不会溢出到右边界外面。
+   跟同屏另一个 TV 软件的密度对齐（一行 6 张，不截断）。 */
+.grid{
+  display:grid;
+  grid-template-columns:repeat(6,minmax(0,1fr));
+  grid-column-gap:1.6rem;
+  grid-row-gap:2.4rem;
+  width:100%;max-width:100%;
+}
+/* min-width:0 必须写：grid 的 1fr 等于 minmax(auto,1fr)，长剧名会把
+   自动最小宽度撑大，同一行里各列宽窄不一，就是“封面大小不一”的来源 */
+/* overflow 必须 visible：焦点描边画在海报外圈，父级一旦 hidden 就会被裁掉，
+   上一版遥控器选剧时「只剩底下一道横线」就是被 .card 裁掉的后果。 */
+.card{
+  display:block;width:100%;max-width:100%;min-width:0;overflow:visible;
+  position:relative;
+  text-align:left;border-radius:1.1rem;
+}
+/* 1:1.4 的比例用 padding-top 撑：宽度随列自适应，高度永远跟着走 */
+.card .art{
+  position:relative;display:block;height:0;padding-top:140%;
+  border-radius:1.1rem;overflow:hidden;background:var(--panel);
+  transition:transform .16s cubic-bezier(.22,.61,.36,1),box-shadow .16s linear;
+}
+/* 圆角必须同时写在 img 上：选中态 .art 有 transform，成了独立合成层，
+   老内核下父级的 overflow:hidden + border-radius 就不再裁子元素 ——
+   这就是「没选中是圆角、一选中变直角」的原因。 */
+.card .art img{
+  position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;
+  border-radius:1.1rem;
+}
+.card .art .badge{
+  position:absolute;left:.6rem;bottom:.6rem;
+  background:rgba(0,0,0,.72);color:#ffe08a;
+  font-size:1.4rem;font-weight:700;
+  padding:.2rem .6rem;border-radius:.4rem;
+}
+/* 榜单名次：#1~#3 描金，其余深灰，和评分角标同一位置，不额外占地方 */
+.card .art .badge.is-rank{color:#ccd5df}
+.card .art .badge.is-rank.is-top{background:linear-gradient(180deg,#ffd76a,#eda21a);color:#2b1d04}
+.card .name{
+  display:block;width:100%;margin-top:1.3rem;
+  font-size:1.95rem;line-height:1.4;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  transition:transform .16s cubic-bezier(.22,.61,.36,1);
+}
+/* 焦点：整张海报放大 + 四边完整描边。
+   描边比上一版细一点、圆角放大到 1.1rem，跟海报本身同一个轮廓，不会出现
+   「圆角框套一个直角图」的割裂感。放大后海报下沿会多吃掉约 1.7rem，
+   剧名跟着下移 1.1rem，才不会贴着框底。 */
+.card.is-focused{z-index:8}
+.card.is-focused .art{
+  transform:scale(1.08);
+  box-shadow:0 0 0 .34rem var(--focus),0 .9rem 2.4rem rgba(0,0,0,.42);
+}
+.card.is-focused .name{transform:translateY(1.3rem)}
+/* 标题超长：选中后跑马灯。
+   外层 .name 负责裁剪；内层 .mq-track 用 inline-block（电视端老内核也稳），
+   里面是三段：文本 / 固定宽度的空档 / 文本。空档用真实 span 占位，
+   不依赖 flex gap（Chrome 84 以下没有）。位移由 JS 的 rAF 逐帧累加，不用 CSS 动画。 */
+.card .name .mq-track{
+  display:inline-block;white-space:nowrap;will-change:transform;
+}
+.card .name .mq-track > span{
+  display:inline-block;vertical-align:baseline;white-space:nowrap;
+}
+.card .name .mq-blank{
+  height:1px;font-size:0;line-height:0;overflow:hidden;
+}
+.card .name.is-scrolling{text-overflow:clip}
+
+/* ---------------- 分类条 ---------------- */
+.chips{display:block;margin-bottom:2.4rem}
+.chip{
+  display:inline-block;vertical-align:top;
+  height:5rem;line-height:5rem;
+  padding:0 2.4rem;margin:0 1.2rem 1.2rem 0;
+  border-radius:2.5rem;
+  background:var(--chip-bg);color:var(--chip-ink);
+  font-size:2rem;
+  transition:background .12s linear,color .12s linear;
+}
+.chip.is-active{background:var(--accent);color:var(--accent-ink);font-weight:700}
+/* 胶囊外框也用 box-shadow：跟随圆角，不再是方形描边 */
+.chip.is-focused{box-shadow:0 0 0 .3rem var(--halo),0 0 0 .7rem var(--focus);color:var(--text)}
+.chip.is-active.is-focused{color:var(--accent-ink)}
+
+/* ---------------- 详情 ---------------- */
+.detail{
+  display:grid;grid-template-columns:36rem 1fr;
+  grid-column-gap:4.8rem;
+  align-items:start;
+}
+/* 海报钉在屏幕上：遥控器往下翻集数时，海报不跟着走 */
+.detail-art{
+  position:-webkit-sticky;position:sticky;top:1.6rem;
+  align-self:start;
+  width:36rem;height:50.4rem;border-radius:1rem;
+  overflow:hidden;background:var(--panel);
+}
+.detail-art img{width:100%;height:100%;object-fit:cover}
+.detail-info{min-width:0}
+.detail h1{font-size:4.2rem;line-height:1.2;margin:0 0 1.2rem}
+.detail .meta{font-size:2rem;color:var(--muted);margin:0 0 2rem}
+.detail .desc{
+  font-size:1.9rem;line-height:1.75;color:var(--chip-ink);
+  margin:0 0 2.8rem;max-width:96rem;
+  display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
+}
+.actions{display:block;margin-bottom:4rem}
+.btn{
+  display:inline-block;
+  height:6rem;line-height:6rem;
+  padding:0 3.2rem;margin-right:1.4rem;
+  border-radius:1rem;
+  background:var(--chip-bg);font-size:2.1rem;color:var(--text);
+  vertical-align:middle;
+}
+.btn.primary{background:var(--accent);color:var(--accent-ink);font-weight:700}
+.btn.ghost{background:transparent;border:1px solid var(--panel-2);color:var(--muted)}
+.btn.is-focused{box-shadow:0 0 0 .4rem var(--halo),0 0 0 .8rem var(--focus)}
+/* 重头播放：圆形图标按钮，跟「继续播放」并排 */
+.btn.icon-only{
+  width:6rem;padding:0;margin-right:1.6rem;
+  border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.12);
+}
+.btn.icon-only svg{width:3rem;height:3rem;fill:currentColor}
+.detail-actions{display:flex;align-items:center;flex-wrap:wrap}
+
+.eps-title{font-size:2.4rem;margin:0 0 1.6rem;font-weight:700}
+.eps-title span{font-size:1.8rem;color:var(--muted);margin-left:1.4rem;font-weight:400}
+/* 分组条：1-20 / 21-40 … 几百集不用一条道拉到黑 */
+.ep-groups{margin-bottom:2rem}
+.ep-groups .chips{margin-bottom:0}
+.ep-groups .chip{height:4.6rem;line-height:4.6rem;padding:0 1.8rem;font-size:1.9rem}
+.eps{
+  display:grid;grid-template-columns:repeat(8,1fr);
+  grid-column-gap:1.2rem;grid-row-gap:1.2rem;
+  max-width:112rem;
+}
+.eps button{
+  height:5.6rem;line-height:5.6rem;
+  border-radius:.8rem;background:var(--chip-bg);color:var(--text);
+  font-size:2rem;text-align:center;white-space:nowrap;
+  transition:transform .14s cubic-bezier(.22,.61,.36,1),box-shadow .14s linear;
+}
+/* 选集格子同样放大 + 双环包裹，方向键走过的每一格都看得见 */
+.eps button.is-focused{
+  transform:scale(1.1);
+  box-shadow:0 0 0 .35rem var(--halo),0 0 0 .75rem var(--focus);
+  background:var(--accent);color:var(--accent-ink);font-weight:700;
+  position:relative;z-index:4;
+}
+
+/* ---------------- 搜索 ---------------- */
+/* 搜索框左边，扫码二维码常显在右边：电视打字太痛苦，直接手机扫码推文字 */
+.search-head{display:flex;align-items:flex-start;margin-bottom:2.4rem}
+.search-main{flex:1;min-width:0;margin-right:3.2rem}
+.search-box{
+  display:block;position:relative;
+  height:6.8rem;
+  background:var(--chip-bg);border-radius:1rem;
+  padding:0 2.4rem;
+}
+.search-box input{
+  display:block;width:100%;height:6.8rem;
+  border:0;background:transparent;outline:none;
+  color:var(--text);font-size:2.2rem;
+}
+.search-box input::placeholder{color:var(--muted)}
+.search-box.is-focused{box-shadow:0 0 0 .3rem var(--halo),0 0 0 .7rem var(--focus)}
+.search-hint{font-size:1.7rem;color:var(--muted);margin:1.2rem 0 0}
+
+.search-qr{width:24rem;flex:0 0 24rem;text-align:center}
+.search-qr .qr{
+  width:24rem;height:24rem;padding:.8rem;
+  background:#fff;border-radius:1rem;
+}
+.search-qr .qr svg{display:block;width:100%;height:100%}
+.search-qr .qr.empty-qr{
+  background:var(--panel);color:var(--muted);
+  font-size:1.7rem;line-height:1.5;
+  display:flex;align-items:center;justify-content:center;
+}
+.search-qr .cap{
+  margin-top:1rem;font-size:1.7rem;color:var(--muted);line-height:1.45;
+}
+
+.search-count{font-size:2rem;color:var(--muted);margin:0 0 1.8rem}
+
+/* ---------------- 我的 ---------------- */
+.tabs{display:block;margin-bottom:2.6rem}
+
+/* ---------------- 提示 / 登录 / 账号面板 ---------------- */
+#toast{
+  position:absolute;left:50%;bottom:6rem;
+  margin-left:-20rem;width:40rem;
+  text-align:center;
+  background:rgba(0,0,0,.88);color:#fff;
+  padding:1.4rem 2rem;border-radius:1rem;
+  font-size:1.9rem;line-height:1.5;
+  opacity:0;transition:opacity .16s linear;
+  pointer-events:none;
+}
+#toast.show{opacity:1}
+
+/* 弹层（登录 / 账号 / 主题 / 更新）统一走深色底 + 浅色字。
+   主题底色可能是白/黄/粉，弹层如果沿用主题文字色会出现「深字压深底」
+   直接看不见 —— 简洁白下打开主题面板就是这个情况。 */
+#login,#account,#theme,#source{
+  color:#F2F3F5;
+  --text:#F2F3F5;
+  --muted:rgba(255,255,255,.66);
+  --panel:#1B1F24;
+  --panel-2:rgba(255,255,255,.24);
+  --chip-bg:rgba(255,255,255,.13);
+  --chip-ink:#E7E9EB;
+  --accent:var(--accent-bright,#ffd277);
+  --accent-ink:#14181D;
+  --focus:#FFFFFF;
+  --halo:rgba(8,10,13,.92);
+}
+
+#login,#account{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:30;
+  background:#080b0d;
+  display:flex;align-items:center;justify-content:center;
+}
+#account{z-index:28;background:rgba(6,8,10,.96)}
+.login-box{width:76rem;text-align:center}
+.login-box h1{font-size:4rem;margin:0 0 1.4rem}
+.login-box p{font-size:2rem;color:var(--muted);margin:0 0 2.6rem;line-height:1.6}
+.login-qr{
+  width:26rem;height:26rem;
+  margin:0 auto 2.4rem;padding:1rem;
+  background:#fff;border-radius:1rem;
+}
+.login-qr svg{display:block;width:100%;height:100%}
+.login-box .btn{margin:0 .8rem}
+
+.account-box{
+  width:64rem;padding:4rem;
+  background:var(--panel);border-radius:1.4rem;
+  text-align:center;
+}
+.account-box h1{font-size:3.4rem;margin:0 0 1rem;word-break:break-all}
+.account-box p{font-size:1.9rem;color:var(--muted);margin:0 0 3rem;line-height:1.5}
+.account-actions .btn{display:block;margin:0 0 1.6rem;width:100%}
+/* 版本号单独一行，字小一点，别把按钮挤下去 */
+.account-box .account-version{
+  font-size:1.8rem;color:#6f7883;
+  margin:-1.4rem 0 2.4rem;
+}
+
+/* ---------------- 黄果网络通道 ----------------
+   三个模式横排（老内核不认 flex gap，间距一律用 margin），
+   代理地址靠手机扫码填，遥控器只用方向键选模式。 */
+#source{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:31;
+  background:rgba(6,8,10,.97);
+  display:flex;align-items:center;justify-content:center;
+  color:#F2F3F5;
+}
+#source[hidden]{display:none}
+#proxy{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:29;
+  background:rgba(6,8,10,.97);
+  display:flex;align-items:center;justify-content:center;
+  color:#F2F3F5;
+}
+.proxy-box{
+  width:108rem;padding:4.2rem;
+  background:var(--panel);border-radius:1.4rem;
+}
+.proxy-box h1{font-size:3.4rem;margin:0 0 1rem}
+.proxy-sub{font-size:1.8rem;color:var(--muted);margin:0 0 2.8rem;line-height:1.5}
+.proxy-modes{display:flex;margin:0 0 2.8rem}
+.proxy-mode{
+  flex:1;display:block;text-align:left;
+  margin:0 1.2rem 0 0;padding:2rem 1.8rem;
+  border:1px solid var(--panel-2);border-radius:1.2rem;
+  background:rgba(255,255,255,.04);color:#F2F3F5;
+}
+.proxy-mode:last-child{margin-right:0}
+.proxy-mode strong{display:block;font-size:2.4rem;margin:0 0 1rem;font-weight:700}
+.proxy-mode small{display:block;font-size:1.7rem;color:var(--muted);line-height:1.45}
+.proxy-mode.is-active{
+  border-color:var(--accent);background:rgba(200,155,60,.16);
+}
+.proxy-mode.is-active strong{color:var(--accent)}
+.proxy-mode.is-focused{box-shadow:0 0 0 .4rem var(--halo),0 0 0 .8rem var(--focus)}
+.proxy-addr{margin:0 0 2.6rem}
+.proxy-addr label{display:block;font-size:1.7rem;color:var(--muted);margin:0 0 1rem}
+.proxy-input{
+  display:block;padding:0 1.6rem;border-radius:1rem;
+  border:1px solid var(--panel-2);background:rgba(255,255,255,.06);
+  margin:0 0 2rem;
+}
+.proxy-input input{
+  width:100%;height:6.4rem;border:0;outline:none;background:transparent;
+  color:#F2F3F5;font-size:2rem;
+}
+.proxy-input.is-focused{box-shadow:0 0 0 .4rem var(--halo),0 0 0 .8rem var(--focus)}
+.proxy-input input::placeholder{color:#6f7883}
+.proxy-qr-row{display:flex;align-items:center;margin:0 0 2.6rem}
+.proxy-qr{
+  width:24rem;height:24rem;padding:1rem;flex:0 0 auto;
+  background:#fff;border-radius:1rem;margin:0 2.8rem 0 0;
+}
+.proxy-qr svg{display:block;width:100%;height:100%}
+.proxy-qr.proxy-qr-empty{
+  background:rgba(255,255,255,.06);color:var(--muted);
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.5rem;line-height:1.5;text-align:center;padding:1.4rem;
+}
+.proxy-cap{font-size:2rem;color:#cfd4da;margin:0;line-height:1.8;max-width:52rem}
+.proxy-actions .btn{margin:0 1.2rem 0 0;min-width:18rem}
+
+/* ---------------- 私密内容源 ---------------- */
+.source-list{display:flex;flex-direction:column;gap:1.6rem;margin:0 0 2.6rem}
+.source-item{display:flex;flex-direction:column;gap:.8rem;padding:2.2rem 2.6rem;border:2px solid var(--panel-2);border-radius:1.4rem;background:rgba(255,255,255,.04);text-align:left;color:#F2F3F5}
+.source-item strong{font-size:2.4rem;font-weight:700}
+.source-item small{font-size:1.7rem;color:var(--muted);line-height:1.45}
+.source-item.is-active{border-color:var(--accent)}
+.source-item.is-active strong{color:var(--accent)}
+.source-item.is-focused{border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,255,255,.18)}
+
+/* ---------------- 动态码 ----------------
+   遥控器只有方向键，6 位数字靠屏幕上的九宫格输，焦点走统一的 .is-focused 环。 */
+#otp{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:32;
+  background:rgba(6,8,10,.97);
+  display:flex;align-items:center;justify-content:center;
+  color:#F2F3F5;
+}
+.otp-box{width:64rem;text-align:center}
+.otp-box h1{font-size:3.4rem;margin:0 0 1rem}
+.otp-sub{font-size:1.9rem;color:rgba(255,255,255,.66);margin:0 0 2.4rem;line-height:1.5}
+.otp-cells{display:flex;justify-content:center;margin-bottom:1.2rem}
+.otp-cells i{
+  display:block;width:6rem;height:7.6rem;line-height:7.6rem;margin:0 .6rem;
+  border-radius:1rem;background:rgba(255,255,255,.10);
+  font-size:3.2rem;font-style:normal;font-weight:700;color:#FFFFFF;
+}
+.otp-cells i.fill{background:rgba(255,255,255,.22)}
+.otp-error{height:2.8rem;font-size:1.8rem;color:#FF8A80;margin:0 0 1.4rem}
+.otp-keys{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  grid-column-gap:1.2rem;grid-row-gap:1.2rem;
+  width:48rem;margin:0 auto;
+}
+.otp-keys button{
+  height:7rem;line-height:7rem;border-radius:1rem;
+  background:rgba(255,255,255,.10);color:#FFFFFF;
+  font-size:2.6rem;font-weight:700;
+}
+.otp-keys button.is-focused{
+  background:var(--accent);color:var(--accent-ink);
+  box-shadow:0 0 0 .35rem rgba(8,10,13,.92),0 0 0 .75rem #FFFFFF;
+}
+
+/* ---------------- 更新 ----------------
+   只在「我的」里手动触发：电视端不自动检查，也不自动下载。 */
+#tv-update{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:40;
+  background:rgba(4,6,8,.96);
+  display:flex;align-items:center;justify-content:center;
+}
+.update-box{
+  width:70rem;padding:4rem;
+  background:var(--panel);border-radius:1.4rem;
+  text-align:center;
+}
+.update-box h1{font-size:3.4rem;margin:0 0 1.2rem}
+.update-box p{
+  font-size:1.9rem;color:var(--muted);
+  margin:0 0 2.6rem;line-height:1.6;
+  text-align:left;word-break:break-word;
+}
+/* 版本/体积一行，更新说明单独一段，别在「更新包 10MB」中间折行 */
+.update-box #tv-update-sub{margin-bottom:1.2rem}
+.update-box #tv-update-notes{
+  font-size:1.7rem;color:#868f99;
+  margin:0 0 2.6rem;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+}
+.update-track{
+  position:relative;height:1.2rem;border-radius:.6rem;
+  background:var(--panel-2);overflow:hidden;
+  margin:0 0 1.4rem;
+}
+.update-track i{
+  position:absolute;left:0;top:0;bottom:0;width:100%;
+  background:var(--accent);
+  transform:scaleX(0);transform-origin:left center;
+}
+#tv-update-percent{display:block;font-size:1.8rem;color:var(--muted);margin:0 0 2.4rem}
+.update-actions .btn{margin:0 1rem}
+
+/* ---------------- 继续播放 / NAS ----------------
+   详情页「上次看到第 N 集 · 12:34」一行，以及旁边的重头播放圆按钮。 */
+.resume-line{
+  display:inline-block;
+  font-size:1.8rem;color:var(--accent);
+  background:var(--glow);
+  border-radius:.6rem;padding:.4rem 1rem;
+  margin:0 0 1.4rem;
+}
+/* NAS 里还没下载完的任务：压暗，选中时提示 */
+.card.is-dim .art img{opacity:.42}
+.card.is-dim .badge{background:rgba(0,0,0,.55);color:#cfd5dc}
+.nas-panel .empty .tip{font-size:1.8rem;color:#77808a}
+
+/* ---------------- 主题设置 ----------------
+   左下角账号 → 主题设置。八个固定配色，只换 CSS 变量，
+   不触发任何图片加载与模糊重算，遥控器怎么按都不会卡。 */
+#theme{
+  position:absolute;left:0;right:0;top:0;bottom:0;z-index:29;
+  background:rgba(6,8,10,.94);
+  display:flex;align-items:center;justify-content:center;
+}
+.theme-box{
+  width:92rem;padding:3.4rem 4rem 3rem;
+  background:var(--panel);border-radius:1.4rem;
+}
+.theme-box h1{font-size:3.2rem;margin:0 0 .8rem}
+.theme-box .theme-sub{font-size:1.8rem;color:var(--muted);margin:0 0 2.4rem;line-height:1.5}
+.theme-grid{
+  /* 九套主题：3×3 刚好摆满，四列会剩一个孤零零挂在最后一行 */
+  display:grid;grid-template-columns:repeat(3,1fr);
+  grid-column-gap:1.4rem;grid-row-gap:1.4rem;
+}
+.theme-swatch{
+  display:block;width:100%;text-align:left;
+  padding:1.2rem;border-radius:1rem;
+  background:var(--chip-bg);
+  transition:box-shadow .12s linear;
+}
+.theme-swatch .dot{
+  display:block;height:5.4rem;border-radius:.7rem;
+  border:1px solid rgba(128,128,128,.35);
+}
+.theme-swatch .name{
+  display:block;margin-top:1rem;
+  font-size:1.9rem;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.theme-swatch .tick{
+  display:block;margin-top:.3rem;height:1.7rem;
+  font-size:1.6rem;color:var(--accent);font-weight:700;
+}
+.theme-swatch.is-focused{box-shadow:0 0 0 .35rem var(--focus)}
+.theme-swatch.is-active{box-shadow:inset 0 0 0 .15rem var(--accent)}
+.theme-actions{margin-top:2.6rem;text-align:right}
+.theme-actions .btn{margin-right:0;min-width:16rem;text-align:center}
+
+/* 高性能模式：海报背景参数。
+   弹层本身是 .94 的黑底，选这套主题时降到 .52，好让整屏海报透出来当背景 ——
+   翻参数的时候直接看到真实效果，不用退出再进。
+   布局改成左右两栏：左边九宫格 + 关闭，右边参数 + 预览。竖着堆会超一屏，
+   而遥控器焦点移动不会帮你滚弹层，滚出去的按钮就点不到了。 */
+#theme.is-hero-preview{background:rgba(6,8,10,.52)}
+#theme.is-hero-preview .theme-box{width:126rem}
+.theme-box{max-height:92%}
+.theme-cols{display:flex;align-items:flex-start}
+.theme-col-left{flex:1;min-width:0}
+.hero-tune{
+  width:54rem;flex:none;
+  margin-left:3.2rem;padding-left:3.2rem;
+  border-left:1px solid rgba(255,255,255,.12);
+}
+.hero-tune[hidden]{display:none}
+.hero-tune-head{display:flex;align-items:baseline;margin-bottom:1.6rem}
+.hero-tune-head h2{font-size:2.2rem;margin:0;font-weight:700;color:#F2F3F5}
+.hero-tune-head span{font-size:1.5rem;color:rgba(255,255,255,.56);margin-left:1rem}
+.hero-rows{padding-right:.2rem}
+.tune-row{
+  display:flex;align-items:center;
+  padding:.7rem 1.2rem;margin-bottom:.6rem;
+  border-radius:.8rem;background:rgba(255,255,255,.07);
+  transition:background .12s linear;
+}
+.tune-row.is-focused{background:rgba(255,255,255,.19);box-shadow:0 0 0 .3rem #FFFFFF}
+.tune-label{width:9.4rem;flex:none;font-size:1.8rem;color:#E7E9EB}
+.tune-track{
+  flex:1;height:.9rem;margin:0 1.3rem;border-radius:.45rem;
+  background:rgba(255,255,255,.16);position:relative;overflow:hidden;
+}
+.tune-track i{position:absolute;left:0;top:0;bottom:0;background:var(--accent-bright,#ffd277);border-radius:.45rem}
+.tune-value{width:8.6rem;flex:none;text-align:right;font-size:1.7rem;color:rgba(255,255,255,.62)}
+.tune-row.is-focused .tune-value{color:#FFFFFF}
+
+.hero-preview{width:100%;margin-top:1.6rem}
+.hero-preview-bg{
+  position:relative;width:100%;height:15rem;border-radius:1rem;overflow:hidden;
+  background:#0d1013;
+}
+.hero-preview-bg img{
+  position:absolute;left:-4%;top:-4%;width:108%;height:108%;object-fit:cover;
+}
+.hero-preview-bg .hero-preview-veil{
+  position:absolute;left:0;right:0;top:0;bottom:0;
+  background:
+    linear-gradient(90deg,rgba(8,10,13,.62) 0%,rgba(8,10,13,.30) 34%,rgba(8,10,13,.12) 100%),
+    linear-gradient(180deg,rgba(8,10,13,.20) 0%,rgba(8,10,13,0) 34%,rgba(8,10,13,.50) 100%);
+}
+.hero-preview-bg .hero-preview-title{
+  position:absolute;left:1.4rem;bottom:1.2rem;right:1.4rem;
+  font-size:1.8rem;font-weight:700;color:#FFFFFF;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  text-shadow:0 1px 4px rgba(0,0,0,.65);
+}
+.hero-preview .hero-preview-cap{
+  display:block;margin-top:.8rem;font-size:1.5rem;color:rgba(255,255,255,.5);text-align:center;
+}
+.hero-tune-actions{margin-top:1.4rem}
+.hero-tune-actions .btn{min-width:14rem;text-align:center}
+
+/* 自定义主题：右边这块二维码就是上传入口，手机扫完选图即可。
+   二维码底下不放任何说明文字 —— 电视上字号小，反而看不清。 */
+.bg-qr{
+  display:flex;align-items:center;flex-wrap:nowrap;
+  background:rgba(255,255,255,.94);border-radius:1.2rem;
+  padding:1.2rem 1.6rem;margin-bottom:1.4rem;color:#20242C;
+}
+.bg-qr[hidden]{display:none}
+.bg-qr .code{width:13rem;height:13rem;flex:none;margin-right:1.8rem;background:#FFFFFF;border-radius:.8rem;padding:.6rem}
+.bg-qr .code svg{width:100%;height:100%;display:block}
+.bg-qr .cap{font-size:1.6rem;line-height:1.5;color:#3A4150;margin:0}
+.bg-qr .cap b{display:block;font-size:1.8rem;color:#1B1F27;margin-bottom:.4rem}
+.bg-qr-empty{
+  width:100%;padding:2.4rem;text-align:center;font-size:1.6rem;line-height:1.6;color:#3A4150;
+  background:rgba(255,255,255,.94);border-radius:1.2rem;margin-bottom:1.4rem;
+}
+/* 自定义底图：只在首页/搜索/我的出现（详情页仍走海报），参数由面板控制 */
+body[data-backdrop="custom"] #tv-bg img{opacity:1}
+body[data-backdrop="custom"] #tv-bg{background:#0d1013}

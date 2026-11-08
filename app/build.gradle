@@ -1,0 +1,135 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.veyra.gybeyond'
+    compileSdk 37
+
+    defaultConfig {
+        applicationId 'com.veyra.gybeyond'
+        minSdk 26
+        targetSdk 36
+        versionCode 412
+        versionName "0.28.14"
+        testInstrumentationRunner 'com.veyra.gybeyond.PlaybackTestRunner'
+    }
+
+    // 两个形状：mobile（手机 + 平板）与 tv（电视轻量大屏）。
+    // 共用同一份 Java 代码和 assets，只在打包产物和 R.bool.veyra_lite 上分开 ——
+    // 电视端不加载玻璃/转场/主题那几套脚本，页面用 ?lite=1 打开。
+    flavorDimensions 'form'
+    productFlavors {
+        mobile {
+            dimension 'form'
+            resValue "string", "app_name", "Veyra"
+        }
+        tv {
+            dimension 'form'
+            // 电视独立包：单独包名，能和手机包装在同一台设备上互不覆盖
+            applicationIdSuffix '.tv'
+            // 桌面/应用列表里叫 Veyra TV，跟手机版分得开
+            resValue "string", "app_name", "Veyra TV"
+        }
+    }
+
+    signingConfigs {
+        release {
+            // 接手版签名：从环境变量读取，未设置时回退到本地交付文件（不入库）。
+            def ks = System.getenv('CHENGZI_KEYSTORE') ?: '/path/to/chengzi-release.keystore'
+            def sp = System.getenv('CHENGZI_STORE_PASS') ?: 'CHANGE_ME_STORE_PASS'
+            def kp = System.getenv('CHENGZI_KEY_PASS') ?: 'CHANGE_ME_KEY_PASS'
+            storeFile file(ks)
+            storePassword sp
+            keyAlias System.getenv('CHENGZI_KEY_ALIAS') ?: 'chengzi'
+            keyPassword kp
+        }
+    }
+
+    // resValue 在 AGP 8 里默认关闭，需要在 buildFeatures 打开（电视包靠它改应用名）
+    buildFeatures {
+        resValues true
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+
+    // Install device regression tests beside the user's signed app, with separate local data.
+    if (providers.gradleProperty('playbackQa').isPresent()) {
+        buildTypes.debug.applicationIdSuffix = '.playbackqa'
+    }
+
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // 压缩 native libs（minSdk 26 ≥ 23 支持从 APK 直接加载压缩 .so）：减小 APK 体积
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+configurations { hongguoCompile }
+def hongguoJar = layout.buildDirectory.file('libs/hongguo-core.jar')
+def compileHongguo = tasks.register('compileHongguoCore', Exec) {
+    inputs.files(fileTree('../third_party/hongguo/src') { include '**/*.kt' })
+    inputs.file('../scripts/build-hongguo-core.py')
+    outputs.file(hongguoJar)
+    doFirst {
+        def sdkPath = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT') ?: "${System.getenv('LOCALAPPDATA')}/Android/Sdk"
+        def platform = file("${sdkPath}/platforms/android-37.0/android.jar")
+        if (!platform.exists()) platform = file("${sdkPath}/platforms/android-37/android.jar")
+        commandLine 'python', '-X', 'utf8', file('../scripts/build-hongguo-core.py'),
+                '--classpath', (configurations.hongguoCompile.files + [platform]).collect { it.absolutePath }.join(File.pathSeparator),
+                '--output', hongguoJar.get().asFile.absolutePath
+    }
+}
+
+dependencies {
+    hongguoCompile('com.squareup.okhttp3:okhttp:4.10.0') { transitive = false }
+    hongguoCompile('com.squareup.okio:okio-jvm:3.0.0') { transitive = false }
+    hongguoCompile('org.bouncycastle:bcprov-jdk18on:1.80.2') { transitive = false }
+    hongguoCompile('org.jsoup:jsoup:1.23.2') { transitive = false }
+    hongguoCompile('org.jetbrains.kotlin:kotlin-stdlib:2.2.10') { transitive = false }
+    implementation files(hongguoJar).builtBy(compileHongguo)
+    // v0.18.32 起黄果 ts→mp4 走 Java Cipher 解密 + MediaExtractor/MediaMuxer（mergeTsToMp4），
+    // JavaCPP ffmpeg 三个 jar 已移除（APK 瘦身）
+    implementation 'com.squareup.okhttp3:okhttp:4.10.0'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.80.2'
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.2.10'
+    implementation 'androidx.webkit:webkit:1.17.1'
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'junit:junit:4.13.2'
+    implementation 'androidx.core:core:1.7.0'
+    implementation 'org.jsoup:jsoup:1.23.2'
+    implementation 'androidx.media3:media3-exoplayer:1.11.1'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.11.1'
+    implementation 'androidx.media3:media3-ui:1.11.1'
+    // 扫码登录电视：只用 zxing 的纯 Java 解码核心（约 600KB），不拖 appcompat。
+    // 电视包没有相机，这些依赖只进手机/平板。
+    mobileImplementation 'com.google.zxing:core:3.5.3'
+    // 预览用 CameraX：PreviewView 统一处理传感器朝向 + 屏幕方向 + 镜像 + 等比裁剪，
+    // 这些是 CameraX 在大量机型上校准过的。自己用 Camera2 + TextureView 推矩阵，
+    // 试了两版画面还是歪的 —— 这活儿不该手工做。
+    mobileImplementation "androidx.camera:camera-core:1.4.1"
+    mobileImplementation "androidx.camera:camera-camera2:1.4.1"
+    mobileImplementation "androidx.camera:camera-lifecycle:1.4.1"
+    mobileImplementation "androidx.camera:camera-view:1.4.1"
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.0.1'
+    // 「下载/传输到远程服务器」：SMB 走 jcifs-ng（SMB1~SMB3 自动协商 + NTLMv2，匿名共享也认），
+    // FTP/FTPS 走 commons-net。WebDAV 用已有的 OkHttp，不再引依赖。
+    // 只保留真正要用的传递依赖：jcifs-ng 的 servlet-api / annotation-api 是服务端才用的。
+    implementation('eu.agno3.jcifs:jcifs-ng:2.1.10') {
+        exclude group: 'javax.servlet', module: 'javax.servlet-api'
+        exclude group: 'javax.annotation', module: 'javax.annotation-api'
+    }
+    implementation 'commons-net:commons-net:3.10.0'
+}
