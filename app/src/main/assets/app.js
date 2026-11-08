@@ -64,6 +64,11 @@ const state = {
   search: null, searchPending: false, searchError: '', query: '', filter: 'all', banner: 0, categoryBanner: 0,
   listing: null, tags: null, tagsReturn: null, listingReturn: null, settingsReturn: null,
   libraryTab: 'history', libraryQuery: '', accountReturn: null, account: { loggedIn: false },
+  // 红果账号（字节 passport）：登录态、云端历史缓存、扫码会话
+  cloud: {
+    loggedIn: false, nickname: '', loading: false, error: '', items: null,
+    qr: '', qrDeadline: 0, loginStatus: '', loginError: ''
+  },
   sourceGroup: '', sourceQueue: [], previous: null, compactHeld: false,
   detailProgress: null
 };
@@ -1107,6 +1112,8 @@ function renderLibrary() {
   const bookmarks = asArray(data.bookmarks).filter(matches);
   const historyActive = state.libraryTab === 'history';
   const downloadsActive = state.libraryTab === 'downloads';
+  const cloudActive = state.libraryTab === 'cloud';
+  const bookmarksActive = state.libraryTab === 'bookmarks';
   const historyCards = progress.map(item => {
     const completed = Boolean(item.completed);
     const episode = Number(item.episode) || 1;
@@ -1124,14 +1131,89 @@ function renderLibrary() {
     <button type="button" role="tab" data-library-tab="downloads" aria-selected="${true}" class="selected">我的下载</button></div>
     <div id="library-downloads"><p class="page-loading">正在加载…</p></div>` : `
     <div class="segmented library-tabs" role="tablist" aria-label="我的片单分类"><button type="button" role="tab" data-library-tab="history" aria-selected="${historyActive}" class="${historyActive ? 'selected' : ''}">观看历史</button>
-    <button type="button" role="tab" data-library-tab="bookmarks" aria-selected="${!historyActive}" class="${!historyActive ? 'selected' : ''}">我的收藏</button>
+    <button type="button" role="tab" data-library-tab="bookmarks" aria-selected="${bookmarksActive}" class="${bookmarksActive ? 'selected' : ''}">我的收藏</button>
+    <button type="button" role="tab" data-library-tab="cloud" aria-selected="${cloudActive}" class="${cloudActive ? 'selected' : ''}">云端</button>
     <button type="button" role="tab" data-library-tab="downloads" aria-selected="${false}" class="">我的下载</button></div>
-    <p class="library-count">${historyActive ? `最近观看的 ${progress.length} 部作品` : `已收藏 ${bookmarks.length} 部作品`}</p>
-    ${historyActive ? (progress.length ? `<div class="history-list">${historyCards}</div>` : '<div class="empty-state">还没有观看记录，播放作品后会出现在这里</div>') :
+    <p class="library-count">${cloudActive ? cloudSummary() : historyActive ? `最近观看的 ${progress.length} 部作品` : `已收藏 ${bookmarks.length} 部作品`}</p>
+    ${cloudActive ? renderCloudHistory() :
+      historyActive ? (progress.length ? `<div class="history-list">${historyCards}</div>` : '<div class="empty-state">还没有观看记录，播放作品后会出现在这里</div>') :
       (bookmarks.length ? `<div class="search-grid library-bookmark-grid">${bookmarks.map(itemCard).join('')}</div>` : '<div class="empty-state">还没有收藏作品</div>')}`}</div>`;
   hydrateImages();
+  if (cloudActive) loadCloudHistory();
   if (downloadsActive && !swipePrefetchBusy) renderLibraryDownloads();
 }
+
+/* ------------------------ 红果账号（官方云端观看历史） ------------------------
+ * 登录走字节 passport 的扫码接口：本地拿到二维码，用户存到相册后用抖音 App 的
+ * 「扫一扫 → 右上角相册」扫它确认。之所以绕这么一圈，是因为红果的 web 登录页对
+ * 第三方整体封死了（error_code 16），而手机端自己扫自己又做不到。
+ * 凭据加密存本地，不上传任何服务器。
+ */
+function cloudSummary() {
+  const cloud = state.cloud;
+  if (!cloud.loggedIn) return '未登录红果账号，登录后同步官方观看记录';
+  if (cloud.loading) return '正在拉取云端记录…';
+  if (cloud.error) return cloud.error;
+  return `云端最近 ${asArray(cloud.items).length} 条记录`;
+}
+
+function renderCloudHistory() {
+  const cloud = state.cloud;
+  if (!cloud.loggedIn) {
+    return `<div class="empty-state">登录红果账号后，这里会显示你在官方 App 里看过的短剧，换设备也能接着看。<br><button type="button" class="ghost-button" data-hg-account-open style="margin-top:12px">去登录</button></div>`;
+  }
+  if (cloud.loading && !cloud.items) return '<p class="page-loading">正在拉取云端记录…</p>';
+  if (cloud.error) {
+    return `<div class="empty-state">${esc(cloud.error)}<br><button type="button" class="ghost-button" data-hg-cloud-refresh style="margin-top:12px">重试</button></div>`;
+  }
+  const items = asArray(cloud.items);
+  if (!items.length) return '<div class="empty-state">云端还没有观看记录，先在红果 App 里看一集就会有</div>';
+  const cards = items.map(item => {
+    const episode = Math.max(1, Number(item.episodeIndex || 0) + 1);
+    const position = Number(item.position) || 0;
+    const duration = Number(item.duration) || 0;
+    const percentage = duration ? Math.max(0, Math.min(100, position / duration * 100)) : 0;
+    return `<button type="button" class="history-card" data-history-id="${esc(item.id)}" data-history-episode="${episode}" data-history-completed="false" aria-label="${esc(item.title || '影片')}，第 ${episode} 集，继续观看">
+      <span class="history-poster poster loading"><span class="poster-letter">${esc(String(item.title || '影片').slice(0, 1))}</span><img data-cover="${esc(item.cover || '')}" alt=""></span><span class="history-copy"><span class="history-status">云端 · 第 ${episode} 集</span>
+      <strong>${esc(item.title || '影片')}</strong><span class="progress"><i style="width:${percentage}%"></i></span><span class="history-hint">已看 ${Math.floor(position / 60000)} 分钟</span></span></button>`;
+  }).join('');
+  return `<div class="history-list">${cards}</div>`;
+}
+
+/** 只同步登录态，不发云端请求；设置页每次渲染都会跑一次。 */
+async function loadHongguoAccount() {
+  try {
+    const info = await api('hg-account');
+    state.cloud.loggedIn = !!(info && info.loggedIn);
+    state.cloud.nickname = (info && info.nickname) || '';
+  } catch (error) {
+    state.cloud.loggedIn = false;
+  }
+  if (state.route === 'settings') {
+    const hint = document.querySelector('[data-hg-account-open] small');
+    if (hint) hint.textContent = state.cloud.loggedIn ? (state.cloud.nickname || '已登录') : '同步官方观看历史';
+  }
+}
+
+async function loadCloudHistory(force = false) {
+  const cloud = state.cloud;
+  if (!cloud.loggedIn || cloud.loading) return;
+  if (!force && cloud.items) return;
+  cloud.loading = true;
+  cloud.error = '';
+  const repaint = () => { if (state.route === 'library' && state.libraryTab === 'cloud') renderLibrary(); };
+  repaint();
+  try {
+    cloud.items = asArray(await api('hg-history'));
+  } catch (error) {
+    cloud.items = null;
+    cloud.error = (error && error.message) || '云端记录拉取失败';
+  } finally {
+    cloud.loading = false;
+    repaint();
+  }
+}
+
 
 let libraryDownloadsToken = 0;
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('请求超时')), ms))]);
@@ -1674,8 +1756,10 @@ async function submitDownloadTo(target, remoteId) {
 function renderSettings() {
   content.innerHTML = `<div class="settings-page"><button type="button" class="listing-back" data-back="1">${icon('back')} 返回我的</button><h1>设置</h1>
     ${window.renderAppearance ? window.renderAppearance() : ''}
+    <section><button type="button" class="settings-link" data-hg-account-open><span><strong>红果账号</strong><small>${state.cloud.loggedIn ? esc(state.cloud.nickname || '已登录') : '同步官方观看历史'}</small></span>${icon('arrow')}</button></section>
     <section><button type="button" class="settings-link" data-about-open><span><strong>关于彬果</strong><small>版本与更新</small></span>${icon('arrow')}</button></section></div>`;
   if (window.bindAppearance) window.bindAppearance();
+  loadHongguoAccount();
   api('hot-update-status').then(window.hgHotUpdateStatus).catch(() => {});
   loadRemoteServers(true).catch(() => {});   // 设置页摘要要显示「已配置几台」
 }
@@ -1991,6 +2075,174 @@ function closeAboutPop() {
 }
 window.__veyraAboutBack = () => { if (aboutPop && !aboutPop.hidden) { closeAboutPop(); return true; } return false; };
 window.__veyraAboutOpen = () => !!(aboutPop && !aboutPop.hidden);
+
+// ================= 红果账号（扫码登录 + 云端观看历史）=================
+// 手机端没法自己扫自己：二维码先存进相册，用户再用抖音的「扫一扫 → 相册」扫它。
+// 所以这里有一步必须讲清楚，不然用户会卡在"码在哪"。
+var hgLoginPop = null;
+var hgPollTimer = 0;
+
+function buildHgLoginHtml() {
+  const cloud = state.cloud;
+  const head = `<div class="appearance-head"><h2>红果账号</h2><button type="button" class="appearance-close" data-hg-close aria-label="关闭">✕</button></div>`;
+  if (cloud.loggedIn) {
+    return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true">${head}
+      <p class="appearance-note">已登录：<strong>${esc(cloud.nickname || '红果用户')}</strong></p>
+      <div class="hg-actions"><button type="button" data-hg-open-cloud>查看云端观看记录</button>
+      <button type="button" data-hg-cloud-refresh>重新同步</button></div>
+      <div class="hg-actions"><button type="button" class="hg-danger" data-hg-logout>退出登录</button></div>
+      <p class="appearance-note">登录凭据用系统密钥加密后只存在这台设备上，不会上传到任何服务器。</p></div>`;
+  }
+  if (cloud.qr) {
+    const status = cloud.loginError
+      ? `<span class="hg-error">${esc(cloud.loginError)}</span>`
+      : esc(cloud.loginStatus || '等待抖音扫码确认…');
+    return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true">${head}
+      <div class="hg-qr"><img src="data:image/png;base64,${cloud.qr}" alt="登录二维码"></div>
+      <p class="appearance-note">点下面的按钮把二维码<strong>存进相册</strong>，再打开 <strong>抖音 → 扫一扫 → 右上角「相册」</strong>，选中刚存的那张图，在抖音里点确认，然后回到这里。</p>
+      <div class="hg-actions"><button type="button" data-hg-save>保存二维码到相册</button>
+      <button type="button" data-hg-restart>换一张</button></div>
+      <p class="appearance-note hg-status">${status}</p></div>`;
+  }
+  return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true">${head}
+    <p class="appearance-note">红果用的是<strong>抖音账号</strong>。扫码登录后，这里会显示你在官方 App 里看过的短剧，换设备也能接着看。</p>
+    ${cloud.loginError ? `<p class="appearance-note hg-error">${esc(cloud.loginError)}</p>` : ''}
+    <div class="hg-actions"><button type="button" data-hg-start>获取登录二维码</button></div></div>`;
+}
+
+function ensureHgLoginPop() {
+  if (hgLoginPop && document.body.contains(hgLoginPop)) return hgLoginPop;
+  hgLoginPop = document.createElement('div');
+  hgLoginPop.className = 'appearance-scrim';
+  hgLoginPop.hidden = true;
+  hgLoginPop.addEventListener('click', event => {
+    if (event.target === hgLoginPop || event.target.closest('[data-hg-close]')) closeHgLoginPop();
+  });
+  document.body.appendChild(hgLoginPop);
+  return hgLoginPop;
+}
+
+function repaintHgLogin() {
+  if (!hgLoginPop || hgLoginPop.hidden) return;
+  hgLoginPop.innerHTML = buildHgLoginHtml();
+}
+
+function openHgLoginPop() {
+  ensureHgLoginPop();
+  hgLoginPop.innerHTML = buildHgLoginHtml();
+  hgLoginPop.hidden = false;
+  document.body.classList.add('appearance-open');
+  // 之前为了去抖音操作关掉过弹层的，回来后接着等结果，不用重新拿码
+  if (state.cloud.qr && !state.cloud.loggedIn && state.cloud.qrDeadline > Date.now()) {
+    scheduleHgPoll(state.cloud.qrDeadline);
+  }
+}
+
+function closeHgLoginPop() {
+  stopHgPoll();
+  if (!hgLoginPop || hgLoginPop.hidden) return;
+  hgLoginPop.hidden = true;
+  document.body.classList.remove('appearance-open');
+  if (state.route === 'settings') renderSettings();
+}
+window.__veyraHgLoginBack = () => {
+  if (hgLoginPop && !hgLoginPop.hidden) { closeHgLoginPop(); return true; }
+  return false;
+};
+
+function stopHgPoll() {
+  if (hgPollTimer) { clearTimeout(hgPollTimer); hgPollTimer = 0; }
+}
+
+async function startHgLogin() {
+  const cloud = state.cloud;
+  cloud.loginError = '';
+  cloud.loginStatus = '正在获取二维码…';
+  cloud.qr = '';
+  repaintHgLogin();
+  try {
+    const reply = await api('hg-login-start');
+    cloud.qr = (reply && reply.qrcode) || '';
+    cloud.loginStatus = '等待抖音扫码确认…';
+    const expires = Number(reply && reply.expiresIn) || 180;
+    cloud.qrDeadline = Date.now() + Math.max(60, expires) * 1000;
+    repaintHgLogin();
+    scheduleHgPoll(cloud.qrDeadline);
+  } catch (error) {
+    cloud.loginError = (error && error.message) || '二维码获取失败';
+    repaintHgLogin();
+  }
+}
+
+/** 每 2.5 秒问一次抖音那边确认了没有；过期就停，网络抖动继续等。 */
+function scheduleHgPoll(deadline) {
+  stopHgPoll();
+  const tick = async () => {
+    hgPollTimer = 0;
+    if (!hgLoginPop || hgLoginPop.hidden || !state.cloud.qr) return;
+    if (Date.now() > deadline) {
+      state.cloud.loginError = '二维码已过期，换一张再试';
+      state.cloud.qr = '';
+      repaintHgLogin();
+      return;
+    }
+    try {
+      const reply = await api('hg-login-poll');
+      if (reply && reply.done) {
+        state.cloud.loggedIn = true;
+        state.cloud.nickname = reply.nickname || '';
+        state.cloud.qr = '';
+        state.cloud.qrDeadline = 0;
+        state.cloud.loginStatus = '';
+        state.cloud.items = null;
+        state.cloud.error = '';
+        repaintHgLogin();
+        toast(`已登录：${state.cloud.nickname || '红果账号'}`);
+        if (state.route === 'library' && state.libraryTab === 'cloud') loadCloudHistory(true);
+        return;
+      }
+    } catch (error) {
+      const message = (error && error.message) || '';
+      if (/过期|expired|无效|失效/.test(message)) {
+        state.cloud.loginError = message;
+        state.cloud.qr = '';
+        repaintHgLogin();
+        return;
+      }
+      // 其余错误（网络抖动、接口偶发）继续轮询，别打断用户操作
+    }
+    hgPollTimer = setTimeout(tick, 2500);
+  };
+  hgPollTimer = setTimeout(tick, 2000);
+}
+
+async function saveHgQr() {
+  const cloud = state.cloud;
+  if (!cloud.qr) return;
+  try {
+    await api('hg-qr-save', { data: cloud.qr });
+    toast('已保存到相册，去抖音「扫一扫 → 相册」里选它');
+  } catch (error) {
+    toast((error && error.message) || '保存失败，可以先截屏再用抖音扫截图', true);
+  }
+}
+
+async function logoutHgAccount() {
+  try {
+    await api('hg-logout');
+    state.cloud.loggedIn = false;
+    state.cloud.nickname = '';
+    state.cloud.qr = '';
+    state.cloud.items = null;
+    state.cloud.error = '';
+    repaintHgLogin();
+    toast('已退出红果账号');
+    if (state.route === 'library' && state.libraryTab === 'cloud') renderLibrary();
+  } catch (error) {
+    toast((error && error.message) || '退出失败', true);
+  }
+}
+
 
 // ================= 远程服务器（SMB / WebDAV / FTP）=================
 // 配置在原生侧（SharedPreferences），这里只管展示与编辑；密码不回传，编辑时留空 = 不改。
@@ -2686,6 +2938,7 @@ window.hgPredictiveBackCommit = () => {
   if (window.__veyraAccountBack && window.__veyraAccountBack()) return true;
   if (window.__veyraProxyBack && window.__veyraProxyBack()) return true;
   if (window.__veyraAboutBack && window.__veyraAboutBack()) return true;
+  if (window.__veyraHgLoginBack && window.__veyraHgLoginBack()) return true;
   if (window.__veyraRemoteBack && window.__veyraRemoteBack()) return true;
   if (window.__veyraRemotePickBack && window.__veyraRemotePickBack()) return true;
   if (state.route === 'detail' && detailCard && downloadOverlay.hidden && authOverlay.hidden && confirmOverlay.hidden && updateOverlay.hidden && unlockOverlay.hidden) {
@@ -3097,6 +3350,7 @@ window.hgBack = () => {
   if (window.__veyraAccountBack && window.__veyraAccountBack()) return true;
   if (window.__veyraProxyBack && window.__veyraProxyBack()) return true;
   if (window.__veyraAboutBack && window.__veyraAboutBack()) return true;
+  if (window.__veyraHgLoginBack && window.__veyraHgLoginBack()) return true;
   if (window.__veyraRemoteBack && window.__veyraRemoteBack()) return true;
   if (window.__veyraRemotePickBack && window.__veyraRemotePickBack()) return true;
   if (!downloadOverlay.hidden) { hideDownloadSheet(); return true; }
@@ -4061,6 +4315,19 @@ document.addEventListener('click', async event => {
   if (event.target.closest('[data-source-open]')) { openSourcePop(); return; }
   if (event.target.closest('[data-proxy-open]')) { openProxyPop(); return; }
   if (event.target.closest('[data-about-open]')) { openAboutPop(); return; }
+  // ---- 红果账号 ----
+  if (event.target.closest('[data-hg-account-open]')) { openHgLoginPop(); return; }
+  if (event.target.closest('[data-hg-start]') || event.target.closest('[data-hg-restart]')) { startHgLogin(); return; }
+  if (event.target.closest('[data-hg-save]')) { saveHgQr(); return; }
+  if (event.target.closest('[data-hg-logout]')) { logoutHgAccount(); return; }
+  if (event.target.closest('[data-hg-open-cloud]')) { closeHgLoginPop(); goLibrary('cloud'); return; }
+  if (event.target.closest('[data-hg-cloud-refresh]')) {
+    closeHgLoginPop();
+    state.cloud.items = null;
+    if (state.route === 'library' && state.libraryTab === 'cloud') loadCloudHistory(true);
+    else goLibrary('cloud');
+    return;
+  }
   // ---- 远程服务器配置 ----
   if (event.target.closest('[data-remote-open]')) { openRemotePop(); return; }
   if (event.target.closest('[data-remote-add]')) {

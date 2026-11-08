@@ -956,3 +956,16 @@ html[data-theme=dark] .remote-test-result.fail,html[data-theme=dark] .dl-remote-
 }
 .detail-restart svg{width:20px;height:20px}
 .detail-restart[hidden]{display:none}.segmented.cols-3{grid-template-columns:repeat(3,1fr)}.segmented.cols-3 button{font-size:13px;padding:0 2px;white-space:nowrap}.poster-score.is-rank{background:#dce3ec;color:#26313d}html[data-theme=dark] .poster-score.is-rank{background:#3a444f;color:#dfe7f1}.poster-score.is-rank.is-top{background:linear-gradient(180deg,#ffd76a,#eda21a);color:#2b1d04}
+/* ---- 我的页 tab：上游默认两列，加到 4 个会排成 2+2，改成自动等分 ---- */
+.library-tabs{grid-auto-flow:column;grid-template-columns:none;grid-auto-columns:1fr}
+.library-tabs button{font-size:13px;padding:0 2px;white-space:nowrap}
+
+/* ---- 红果账号登录弹层 ---- */
+.hg-qr{margin:2px auto 14px;width:224px;max-width:74%;padding:12px;border-radius:calc(14px * var(--corner-scale,1));background:#fff;display:flex;align-items:center;justify-content:center}
+.hg-qr img{width:100%;height:auto;display:block}
+.hg-actions{display:flex;gap:9px;flex-wrap:wrap;margin:0 0 12px}
+.hg-actions button{min-height:40px;padding:0 14px;border:1px solid var(--line);border-radius:calc(10px * var(--corner-scale,1));background:var(--panel);color:var(--text);font-size:13px}
+.hg-actions button.hg-danger{color:#aa3a28}
+.hg-status{min-height:18px}
+.hg-error{color:#aa3a28}
+.ghost-button{min-height:38px;padding:0 15px;border:1px solid var(--line);border-radius:calc(10px * var(--corner-scale,1));background:var(--panel);color:var(--text);font-size:13px}

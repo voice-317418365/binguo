@@ -120,10 +120,10 @@ class WebLogin(http: OkHttpClient) {
         val data = checked(reply)
         val status = data.optString("status")
         if (status in listOf("5", "expired")) throw IOException("二维码已过期，请重新获取")
-        if (status in listOf("3", "confirmed")) {
-            val redirect = data.optString("redirect_url")
-            if (redirect.isNotBlank()) finishRedirect(redirect)
-        }
+        // 只要给了跳转地址就跟，不依赖具体的 status 取值：官方这个字段出现过
+        // new / 2 / 3 / confirmed 等多种写法，按枚举判断容易在某一端卡住。
+        val redirect = data.optString("redirect_url")
+        if (redirect.isNotBlank()) finishRedirect(redirect)
         return hasSession()
     }
 
@@ -167,13 +167,20 @@ class WebLogin(http: OkHttpClient) {
 
     fun credentials(): AccountCredentials {
         check(hasSession()) { "官网尚未下发登录态，请先在手机确认登录" }
-        checked(call("/passport/account/info/v2/"))
+        // 这里不再调 /passport/account/info/v2/ 做二次校验：那个接口对 UA 与
+        // 签名有额外要求，容易在"已经扫码成功"的情况下误判失败。真正的账号验证
+        // 交给 CloudAccountClient.profile()（fqnovel 的 reading/user/info），
+        // 那才是历史/收藏实际要用的登录态。
+        val active =
+            cookies.filter {
+                it.matches(BASE.toHttpUrl()) && it.expiresAt > System.currentTimeMillis()
+            }
+        // 只带 passport 的登录凭据：其余域内 cookie（ttwid / msToken / csrf …）
+        // 拼给 fqnovel 既用不上，也可能让风控认为是异常请求。
+        val essential = active.filter { it.name == "sessionid" || it.name == "sessionid_ss" }
+        val picked = if (essential.isEmpty()) active else essential
         return AccountCredentials(
-            cookies
-                .filter {
-                    it.matches(BASE.toHttpUrl()) && it.expiresAt > System.currentTimeMillis()
-                }
-                .joinToString("; ") { "${it.name}=${it.value}" }
+            picked.joinToString("; ") { "${it.name}=${it.value}" }
         )
     }
 

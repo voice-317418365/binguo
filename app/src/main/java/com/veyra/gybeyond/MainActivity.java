@@ -1236,6 +1236,37 @@ public final class MainActivity extends Activity {
             repository = this.repository; store = this.store; account = this.account;
         }
         switch (action) {
+            // ---- 红果账号（字节 passport 扫码登录 + 云端历史/收藏）----
+            case "hg-account": {
+                HongguoAccount hg = HongguoAccount.get(this);
+                String nickname = hg.cachedNickname();
+                return new JSONObject()
+                        .put("loggedIn", hg.isLoggedIn())
+                        .put("nickname", nickname == null ? "" : nickname);
+            }
+            case "hg-login-start": return HongguoAccount.get(this).startLogin();
+            case "hg-login-poll": return HongguoAccount.get(this).pollLogin();
+            case "hg-login-cancel": HongguoAccount.get(this).cancelLogin(); return true;
+            case "hg-qr-save": {
+                // Android 9 及以下写相册仍要存储权限，没有就当场申请并让用户再点一次
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                        && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    runOnUiThread(() -> requestPermissions(
+                            new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1001));
+                    throw new IllegalStateException("需要存储权限，已弹出授权框，同意后再点一次「保存到相册」");
+                }
+                HongguoAccount.saveQrToAlbum(this, args.optString("data"));
+                return new JSONObject().put("ok", true);
+            }
+            case "hg-logout": HongguoAccount.get(this).logout(); return new JSONObject().put("ok", true);
+            case "hg-profile": return HongguoAccount.get(this).profile();
+            case "hg-history": return HongguoAccount.get(this).history();
+            case "hg-favorites": return HongguoAccount.get(this).favorites();
+            case "hg-favorite-set": {
+                HongguoAccount.get(this).setFavorite(args.optString("id"), args.optBoolean("add"));
+                return new JSONObject().put("ok", true);
+            }
             case "hot-update-status": return hotUpdates.status().put("enabled", !HotUpdateManager.INDEX.isEmpty());
             case "check-hot-update": return hotUpdates.check(true);
             case "apply-hot-update": runOnUiThread(this::applyPendingResources); return true;
