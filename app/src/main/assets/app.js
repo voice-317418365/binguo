@@ -478,17 +478,13 @@ async function checkUpdate(manual) {
   try {
     const result = await api('check-update', { manual });
     if (result.status === 'available') {
+      // 这个版本用户点过「取消」：冷启动就不再亮角标打扰
+      if (!manual && dismissedUpdateVersion() === String(result.version || '')) return;
       setAvailableUpdate(result);
-      if (manual) { showUpdate(result); return; }
-      // 这个版本用户已经点过「取消」：只留角标，别再每次冷启动都静默下 10MB 再弹窗
-      if (dismissedUpdateVersion() === String(result.version || '')) return;
-      // 启动自动模式：静默下载更新包，完成后弹窗提示安装（无需手动点检测）
-      try {
-        await api('download-update');
-        showUpdate(result);
-      } catch (ignore) {
-        showUpdate(result); // 下载失败也弹窗，按钮可重试
-      }
+      // 只亮角标（设置图标上的红点），不在后台静默下载：
+      // 以前是悄悄下完 13MB 才弹窗，用户看到的是"还没告诉我就开始下载"，
+      // 所以改成「点检查更新 → 弹窗 → 点立即下载」。
+      if (manual) showUpdate(result);
     } else if (result.status === 'current' || result.status === 'unpublished' || result.status === 'none') {
       setAvailableUpdate(null);
       if (manual && result.status === 'current') toast(`已是最新版本 ${result.version}`);
