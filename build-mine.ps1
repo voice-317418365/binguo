@@ -13,6 +13,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Python 输出中文时按 UTF-8，避免 PowerShell 控制台乱码
+$env:PYTHONIOENCODING = "utf-8"
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+
 $env:ANDROID_HOME      = "E:\Android\Sdk"
 $env:ANDROID_SDK_ROOT  = "E:\Android\Sdk"
 $env:KOTLIN_HOME       = "E:\Android\Studio\plugins\Kotlin\kotlinc"
@@ -26,6 +30,11 @@ $env:CHENGZI_KEY_PASS   = "veyra123456"
 $env:CHENGZI_KEY_ALIAS  = "veyra"
 
 Set-Location "E:\code\Veyra"
+
+# 每次构建前重放品牌补丁（免登录 + 文案），幂等；rebase 官方新版后也不会漏
+Write-Output "应用品牌补丁..."
+python scripts/brand-patch.py
+if ($LASTEXITCODE -ne 0) { throw "品牌补丁失败" }
 
 # 改版本号（直接改 app/build.gradle，会留在 git 工作区等你提交）
 if ($VersionName -or $VersionCode -gt 0) {
