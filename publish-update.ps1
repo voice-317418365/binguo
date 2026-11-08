@@ -8,7 +8,7 @@ param(
     [string]$Apk,
     [string]$Notes = "",
     [string]$Server = "root@101.201.32.104",
-    [string]$RemoteDir = "/opt/veyra/nginx/webroot/update"
+    [string]$RemoteDir = "/root/veyra/update"
 )
 
 $ErrorActionPreference = 'Stop'
