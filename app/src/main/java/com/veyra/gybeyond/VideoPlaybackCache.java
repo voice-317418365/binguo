@@ -31,6 +31,22 @@ final class VideoPlaybackCache {
         return cache;
     }
 
+    /**
+     * 释放缓存句柄，供「清除缓存」使用。
+     *
+     * <p>SimpleCache 不释放的话会一直占着 {@code cache/video-segments} 这个目录，
+     * 里面的文件删不掉。释放之后下一次播放会自动重建，不需要重启 App。
+     */
+    static synchronized void release() {
+        if (cache == null) return;
+        try {
+            cache.release();
+        } catch (Exception ignored) {
+            // 已经关掉或者正在被别人释放，忽略即可
+        }
+        cache = null;
+    }
+
     static MediaSource.Factory sources(Context context) {
         // 黄果 HLS 播放按通道模式实时选择：仅代理 → 经配置代理；直连/走后端 → 系统栈直连。
         // 后端转发时 source 本身就是后端代理 URL（直连后端即可）；红果 MP4 走 HongguoPlayback，不受影响。

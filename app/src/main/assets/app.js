@@ -64,9 +64,12 @@ const state = {
   search: null, searchPending: false, searchError: '', query: '', filter: 'all', banner: 0, categoryBanner: 0,
   listing: null, tags: null, tagsReturn: null, listingReturn: null, settingsReturn: null,
   libraryTab: 'history', libraryQuery: '', accountReturn: null, account: { loggedIn: false },
-  // 红果账号（字节 passport）：登录态、云端历史缓存、扫码会话
+  appVersion: '',
+  // 红果账号（字节 passport）：登录态 + 历史/收藏/预约三份云端数据
   cloud: {
     loggedIn: false, nickname: '', loading: false, error: '', items: null,
+    favorites: null, favoritesLoading: false, favoritesError: '',
+    reservations: null, reservationsLoading: false, reservationsError: '',
     qr: '', qrDeadline: 0, loginStatus: '', loginError: ''
   },
   sourceGroup: '', sourceQueue: [], previous: null, compactHeld: false,
@@ -1104,86 +1107,112 @@ function updateCategoryFooter() {
   observeCategoryEnd();
 }
 
+/* 「我的」页：登录红果账号后，历史 / 收藏 / 预约全部以账号数据为准；
+ * 未登录（或还没拉到）才用本机记录兜底，这样不登录也能正常用。 */
+function historyCardFor(item) {
+  // 云端记录带 episodeIndex（0 基），本机记录带 episode（1 基）
+  const cloud = item.episodeIndex !== undefined;
+  const completed = Boolean(item.completed);
+  const episode = cloud ? Math.max(1, Number(item.episodeIndex || 0) + 1) : (Number(item.episode) || 1);
+  const count = Number(item.episodeCount) || 0;
+  const position = Number(item.position) || 0;
+  const percentage = cloud
+    ? (count > 1 ? Math.max(0, Math.min(100, episode / count * 100)) : 0)
+    : (completed ? 100 : Math.max(0, Math.min(100, item.duration ? position / item.duration * 100 : 0)));
+  const hint = completed ? '打开详情选择剧集'
+    : (position > 0 ? `已看 ${Math.max(1, Math.round(position / 60000))} 分钟` : '还没开始看');
+  const status = completed ? '已看完' : `第 ${episode} 集${count > 1 ? ` / 共 ${count} 集` : ''}`;
+  return `<button type="button" class="history-card" data-history-id="${esc(item.id)}" data-history-episode="${episode}" data-history-completed="${completed}" aria-label="${esc(item.title || '影片')}，${status}">
+    <span class="history-poster poster loading"><span class="poster-letter">${esc(String(item.title || '影片').slice(0, 1))}</span><img data-cover="${esc(item.cover || '')}" alt=""></span><span class="history-copy"><span class="history-status">${status}</span>
+    <strong>${esc(item.title || '影片')}</strong><span class="progress"><i style="width:${percentage}%"></i></span><span class="history-hint">${hint}</span></span></button>`;
+}
+
+/* 预约条目：data-history-completed=true 让点击只打开详情，不直接续播 */
+function reservationCardFor(item) {
+  const online = Boolean(item.online);
+  const text = item.publishText || (online ? '已上线' : '待上线');
+  return `<button type="button" class="history-card" data-history-id="${esc(item.id)}" data-history-episode="1" data-history-completed="true" aria-label="${esc(item.title || '影片')}，${text}">
+    <span class="history-poster poster loading"><span class="poster-letter">${esc(String(item.title || '影片').slice(0, 1))}</span><img data-cover="${esc(item.cover || '')}" alt=""></span><span class="history-copy"><span class="history-status">${online ? '已上线' : '预约中'}</span>
+    <strong>${esc(item.title || '影片')}</strong><span class="history-hint">${esc(text)}</span></span></button>`;
+}
+
+function libraryTabButton(tab, name, active) {
+  return `<button type="button" role="tab" data-library-tab="${tab}" aria-selected="${active}" class="${active ? 'selected' : ''}">${name}</button>`;
+}
+
+/** 空态：没登录要给登录引导，登录了但没数据是另一句话，别混用。 */
+function emptyHint(kind) {
+  if (!state.cloud.loggedIn) {
+    const what = kind === 'bookmarks' ? '收藏' : kind === 'reservations' ? '预约' : '观看历史';
+    return `<div class="empty-state">登录红果账号后，这里会显示官方 App 的${what}。<br><button type="button" class="ghost-button" data-hg-account-open style="margin-top:12px">去登录</button></div>`;
+  }
+  if (kind === 'reservations') return '<div class="empty-state">还没有预约的剧。在红果 App 里预约过的会出现在这</div>';
+  if (kind === 'bookmarks') return '<div class="empty-state">红果账号里还没有收藏</div>';
+  return '<div class="empty-state">还没看过剧。在红果 App 或这里看一集就会出现</div>';
+}
+
 function renderLibrary() {
   const data = state.library || { progress: [], bookmarks: [] };
+  const cloud = state.cloud;
   const query = state.libraryQuery.trim().toLocaleLowerCase();
   const matches = item => String(item.title || '').toLocaleLowerCase().includes(query);
-  const progress = asArray(data.progress).filter(matches);
-  const bookmarks = asArray(data.bookmarks).filter(matches);
+
+  const cloudHistory = asArray(cloud.items);
+  const useCloudHistory = cloud.loggedIn && cloudHistory.length > 0;
+  const progress = (useCloudHistory ? cloudHistory : asArray(data.progress)).filter(matches);
+
+  const cloudFavorites = asArray(cloud.favorites);
+  const useCloudFavorites = cloud.loggedIn && cloudFavorites.length > 0;
+  const bookmarks = (useCloudFavorites ? cloudFavorites : asArray(data.bookmarks)).filter(matches);
+
+  const reservations = asArray(cloud.reservations).filter(matches);
+
   const historyActive = state.libraryTab === 'history';
-  const downloadsActive = state.libraryTab === 'downloads';
-  const cloudActive = state.libraryTab === 'cloud';
   const bookmarksActive = state.libraryTab === 'bookmarks';
-  const historyCards = progress.map(item => {
-    const completed = Boolean(item.completed);
-    const episode = Number(item.episode) || 1;
-    const percentage = completed ? 100 : Math.max(0, Math.min(100, item.duration ? item.position / item.duration * 100 : 0));
-    return `<button type="button" class="history-card" data-history-id="${esc(item.id)}" data-history-episode="${episode}" data-history-completed="${completed}" aria-label="${esc(item.title)}，第 ${episode} 集，${completed ? '已看完，打开详情' : '继续观看'}">
-      <span class="history-poster poster loading"><span class="poster-letter">${esc(String(item.title || '影片').slice(0, 1))}</span><img data-cover="${esc(item.cover || '')}" alt=""></span><span class="history-copy"><span class="history-status">${completed ? '已看完' : '继续观看'} · 第 ${episode} 集</span>
-      <strong>${esc(item.title || '影片')}</strong><span class="progress"><i style="width:${percentage}%"></i></span><span class="history-hint">${completed ? '打开详情选择剧集' : `已看 ${Math.floor(item.position / 60000)} 分钟`}</span></span></button>`;
-  }).join('');
-  content.innerHTML = `<div class="library-page"><div class="my-heading"><h1>我的</h1></div>
-    ${query ? `<div class="library-results"><p class="library-count">在观看历史中找到 ${progress.length} 部，在我的收藏中找到 ${bookmarks.length} 部</p>
+  const reservationsActive = state.libraryTab === 'reservations';
+  const downloadsActive = state.libraryTab === 'downloads';
+
+  const historyCards = progress.map(historyCardFor).join('');
+  const bookmarkCards = bookmarks.map(itemCard).join('');
+  const reservationCards = reservations.map(reservationCardFor).join('');
+
+  const tabs = `<div class="segmented library-tabs" role="tablist" aria-label="我的片单分类">${libraryTabButton('history', '观看历史', historyActive)}${libraryTabButton('bookmarks', '收藏', bookmarksActive)}${libraryTabButton('reservations', '预约', reservationsActive)}${libraryTabButton('downloads', '下载', downloadsActive)}</div>`;
+
+  const countText = (n, whenEmpty, label) => (n ? label : whenEmpty);
+
+  let body;
+  if (query) {
+    body = `<div class="library-results"><p class="library-count">在观看历史中找到 ${progress.length} 部，在收藏中找到 ${bookmarks.length} 部</p>
       <h2>观看历史</h2>${progress.length ? `<div class="history-list">${historyCards}</div>` : '<p class="library-no-match">没有匹配的观看记录</p>'}
-      <h2>我的收藏</h2>${bookmarks.length ? `<div class="search-grid library-bookmark-grid">${bookmarks.map(itemCard).join('')}</div>` : '<p class="library-no-match">没有匹配的收藏</p>'}</div>` : downloadsActive ? `
-    <div class="segmented library-tabs" role="tablist" aria-label="我的片单分类"><button type="button" role="tab" data-library-tab="history" aria-selected="${false}" class="">观看历史</button>
-    <button type="button" role="tab" data-library-tab="bookmarks" aria-selected="${false}" class="">我的收藏</button>
-    <button type="button" role="tab" data-library-tab="cloud" aria-selected="${false}" class="">云端</button>
-    <button type="button" role="tab" data-library-tab="downloads" aria-selected="${true}" class="selected">我的下载</button></div>
-    <div id="library-downloads"><p class="page-loading">正在加载…</p></div>` : `
-    <div class="segmented library-tabs" role="tablist" aria-label="我的片单分类"><button type="button" role="tab" data-library-tab="history" aria-selected="${historyActive}" class="${historyActive ? 'selected' : ''}">观看历史</button>
-    <button type="button" role="tab" data-library-tab="bookmarks" aria-selected="${bookmarksActive}" class="${bookmarksActive ? 'selected' : ''}">我的收藏</button>
-    <button type="button" role="tab" data-library-tab="cloud" aria-selected="${cloudActive}" class="${cloudActive ? 'selected' : ''}">云端</button>
-    <button type="button" role="tab" data-library-tab="downloads" aria-selected="${false}" class="">我的下载</button></div>
-    <p class="library-count">${cloudActive ? cloudSummary() : historyActive ? `最近观看的 ${progress.length} 部作品` : `已收藏 ${bookmarks.length} 部作品`}</p>
-    ${cloudActive ? renderCloudHistory() :
-      historyActive ? (progress.length ? `<div class="history-list">${historyCards}</div>` : '<div class="empty-state">还没有观看记录，播放作品后会出现在这里</div>') :
-      (bookmarks.length ? `<div class="search-grid library-bookmark-grid">${bookmarks.map(itemCard).join('')}</div>` : '<div class="empty-state">还没有收藏作品</div>')}`}</div>`;
+      <h2>收藏</h2>${bookmarks.length ? `<div class="search-grid library-bookmark-grid">${bookmarkCards}</div>` : '<p class="library-no-match">没有匹配的收藏</p>'}</div>`;
+  } else if (downloadsActive) {
+    body = `${tabs}<div id="library-downloads"><p class="page-loading">正在加载…</p></div>`;
+  } else if (reservationsActive) {
+    body = `${tabs}${countText(reservations.length, '', `共 ${reservations.length} 部预约`)}${reservationCards ? `<div class="history-list">${reservationCards}</div>` : emptyHint('reservations')}`;
+  } else if (historyActive) {
+    const prefix = useCloudHistory ? '红果账号最近观看 ' : '最近观看 ';
+    body = `${tabs}${countText(progress.length, '', prefix + progress.length + ' 部')}${historyCards ? `<div class="history-list">${historyCards}</div>` : emptyHint('history')}`;
+  } else {
+    body = `${tabs}${countText(bookmarks.length, '', `共 ${bookmarks.length} 部收藏`)}${bookmarkCards ? `<div class="search-grid library-bookmark-grid">${bookmarkCards}</div>` : emptyHint('bookmarks')}`;
+  }
+
+  content.innerHTML = `<div class="library-page"><div class="my-heading"><h1>我的</h1></div>${body}</div>`;
   hydrateImages();
-  if (cloudActive) loadCloudHistory();
+  if (historyActive) loadCloudHistory();
+  if (bookmarksActive) loadCloudFavorites();
+  if (reservationsActive) loadCloudReservations();
   if (downloadsActive && !swipePrefetchBusy) renderLibraryDownloads();
 }
 
 /* ------------------------ 红果账号（官方云端观看历史） ------------------------
  * 登录走字节 passport 的扫码接口：本地拿到二维码，用户存到相册后用红果短剧 App 的
- * 「扫一扫 → 右上角相册」扫它确认。之所以绕这么一圈，是因为红果的 web 登录页对
+ * 「扫一扫 → 下方相册」扫它确认。之所以绕这么一圈，是因为红果的 web 登录页对
  * 第三方整体封死了（error_code 16），而手机端自己扫自己又做不到。
  * 凭据加密存本地，不上传任何服务器。
  */
-function cloudSummary() {
-  const cloud = state.cloud;
-  if (!cloud.loggedIn) return '未登录红果账号，登录后同步官方观看记录';
-  if (cloud.loading) return '正在拉取云端记录…';
-  if (cloud.error) return cloud.error;
-  return `云端最近 ${asArray(cloud.items).length} 条记录`;
-}
+let hongguoAccountOnce = null;
 
-function renderCloudHistory() {
-  const cloud = state.cloud;
-  if (!cloud.loggedIn) {
-    return `<div class="empty-state">登录红果账号后，这里会显示你在官方 App 里看过的短剧，换设备也能接着看。<br><button type="button" class="ghost-button" data-hg-account-open style="margin-top:12px">去登录</button></div>`;
-  }
-  if (cloud.loading && !cloud.items) return '<p class="page-loading">正在拉取云端记录…</p>';
-  if (cloud.error) {
-    return `<div class="empty-state">${esc(cloud.error)}<br><button type="button" class="ghost-button" data-hg-cloud-refresh style="margin-top:12px">重试</button></div>`;
-  }
-  const items = asArray(cloud.items);
-  const toolbar = `<div class="cloud-toolbar"><span>来自红果账号的云端记录${cloud.loading ? '，正在更新…' : ''}</span><button type="button" class="ghost-button" data-hg-cloud-refresh>刷新</button></div>`;
-  if (!items.length) return `${toolbar}<div class="empty-state">云端还没有观看记录。在红果 App 里看一集，回来点「刷新」。</div>`;
-  const cards = items.map(item => {
-    const episode = Math.max(1, Number(item.episodeIndex || 0) + 1);
-    const position = Number(item.position) || 0;
-    const duration = Number(item.duration) || 0;
-    const percentage = duration ? Math.max(0, Math.min(100, position / duration * 100)) : 0;
-    return `<button type="button" class="history-card" data-history-id="${esc(item.id)}" data-history-episode="${episode}" data-history-completed="false" aria-label="${esc(item.title || '影片')}，第 ${episode} 集，继续观看">
-      <span class="history-poster poster loading"><span class="poster-letter">${esc(String(item.title || '影片').slice(0, 1))}</span><img data-cover="${esc(item.cover || '')}" alt=""></span><span class="history-copy"><span class="history-status">云端 · 第 ${episode} 集</span>
-      <strong>${esc(item.title || '影片')}</strong><span class="progress"><i style="width:${percentage}%"></i></span><span class="history-hint">已看 ${Math.floor(position / 60000)} 分钟</span></span></button>`;
-  }).join('');
-  return `${toolbar}<div class="history-list">${cards}</div>
-    <p class="appearance-note cloud-source">这些是红果账号在番茄阅读体系里记的进度（book_type=2），和官方 App「我的 → 浏览历史」的分组不一定完全一致。</p>`;
-}
-
-/** 只同步登录态，不发云端请求；设置页每次渲染都会跑一次。 */
+/** 只同步登录态，不发云端请求。 */
 async function loadHongguoAccount() {
   try {
     const info = await api('hg-account');
@@ -1192,28 +1221,89 @@ async function loadHongguoAccount() {
   } catch (error) {
     state.cloud.loggedIn = false;
   }
+  state.cloud.ready = true;
   if (state.route === 'settings') {
     const hint = document.querySelector('[data-hg-account-open] small');
     if (hint) hint.textContent = state.cloud.loggedIn ? (state.cloud.nickname || '已登录') : '同步官方观看历史';
   }
 }
 
+/**
+ * 登录态只拉一次。凭据是加密存在本机的，杀进程不会丢；
+ * 之前只在设置页调过这个，所以冷启动进「我的」时看着像掉号了。
+ */
+function ensureHongguoAccount() {
+  if (state.cloud.ready) return Promise.resolve();
+  if (!hongguoAccountOnce) hongguoAccountOnce = loadHongguoAccount();
+  return hongguoAccountOnce;
+}
+
+// 冷启动就把登录态取好，「我的」页首帧才不会是"未登录"
+contentReady.then(() => ensureHongguoAccount()).catch(() => {});
+
+function repaintLibrary(tab) {
+  if (state.route === 'library' && state.libraryTab === tab) renderLibrary();
+}
+
+/**
+ * 云端数据加载。三个 tab 共用一套规则：首次自动拉、失败不再自动重试。
+ * 失败后数据是 null，如果重绘时还满足"没数据就拉"，就会无限重试并把错误清空，
+ * 界面永远停在"正在加载"。重试只能由用户手动触发。
+ */
 async function loadCloudHistory(force = false) {
   const cloud = state.cloud;
   if (!cloud.loggedIn || cloud.loading) return;
-  if (!force && cloud.items) return;
+  if (!force && (cloud.items || cloud.error)) return;
   cloud.loading = true;
-  cloud.error = '';
-  const repaint = () => { if (state.route === 'library' && state.libraryTab === 'cloud') renderLibrary(); };
-  repaint();
+  if (force) cloud.error = '';
+  repaintLibrary('history');
   try {
     cloud.items = asArray(await api('hg-history'));
+    cloud.error = '';
   } catch (error) {
     cloud.items = null;
-    cloud.error = (error && error.message) || '云端记录拉取失败';
+    cloud.error = (error && error.message) || '红果账号历史拉取失败';
   } finally {
     cloud.loading = false;
-    repaint();
+    repaintLibrary('history');
+  }
+}
+
+async function loadCloudFavorites(force = false) {
+  const cloud = state.cloud;
+  if (!cloud.loggedIn || cloud.favoritesLoading) return;
+  if (!force && (cloud.favorites || cloud.favoritesError)) return;
+  cloud.favoritesLoading = true;
+  if (force) cloud.favoritesError = '';
+  repaintLibrary('bookmarks');
+  try {
+    cloud.favorites = asArray(await api('hg-favorites'));
+    cloud.favoritesError = '';
+  } catch (error) {
+    cloud.favorites = null;
+    cloud.favoritesError = (error && error.message) || '红果账号收藏拉取失败';
+  } finally {
+    cloud.favoritesLoading = false;
+    repaintLibrary('bookmarks');
+  }
+}
+
+async function loadCloudReservations(force = false) {
+  const cloud = state.cloud;
+  if (!cloud.loggedIn || cloud.reservationsLoading) return;
+  if (!force && (cloud.reservations || cloud.reservationsError)) return;
+  cloud.reservationsLoading = true;
+  if (force) cloud.reservationsError = '';
+  repaintLibrary('reservations');
+  try {
+    cloud.reservations = asArray(await api('hg-reservations'));
+    cloud.reservationsError = '';
+  } catch (error) {
+    cloud.reservations = null;
+    cloud.reservationsError = (error && error.message) || '红果账号预约拉取失败';
+  } finally {
+    cloud.reservationsLoading = false;
+    repaintLibrary('reservations');
   }
 }
 
@@ -2049,10 +2139,56 @@ window.__veyraProxyOpen = () => !!(proxyPop && !proxyPop.hidden);
 
 var aboutPop = null;
 function buildAboutPopHtml() {
-  return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true" aria-labelledby="about-title">
+  const version = state.appVersion;
+  return `<div class="appearance-pop account-pop about-pop" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <div class="appearance-head"><h2 id="about-title">关于彬果</h2><button type="button" class="appearance-close" data-about-close aria-label="关闭">✕</button></div>
-    <p class="appearance-note">项目地址：<button type="button" class="settings-url" data-open-url="https://github.com/voice-317418365/binguo">github.com/voice-317418365/binguo</button> <button type="button" data-check-update>检查更新</button></p>
+    <div class="about-version" id="about-version">${version ? '版本 ' + esc(version) : '读取版本…'}</div>
+    <div class="about-actions"><button type="button" data-check-update>检查更新</button><button type="button" data-clear-cache>清除缓存<span class="about-cache-size" id="about-cache-size"></span></button></div>
+    <p class="appearance-note about-feedback">有任何建议或问题，欢迎发邮件到 <button type="button" class="settings-url" data-copy-text="317418365@qq.com">317418365@qq.com</button>，或在斗鱼私信「<button type="button" class="settings-url" data-copy-text="回收飞哥糕丸">回收飞哥糕丸</button>」。</p>
+    <p class="appearance-note about-link">项目地址：<button type="button" class="settings-url" data-open-url="https://github.com/voice-317418365/binguo">github.com/voice-317418365/binguo</button></p>
+    <div class="about-support">
+      <p>如果您觉得这个项目有帮助，欢迎赞助支持它的开发！</p>
+      <img src="alipay-qr.png" alt="支付宝收款码">
+      <small>打开支付宝「扫一扫」（长按图片可保存）</small>
+    </div>
+    <p class="appearance-note about-cache" id="about-cache-tip"></p>
   </div>`;
+}
+
+/** 把当前缓存占用写进「清除缓存」按钮，清完再刷一次。 */
+function refreshCacheSize() {
+  const label = document.getElementById('about-cache-size');
+  if (!label) return;
+  api('cache-size').then(reply => {
+    const bytes = Number(reply && reply.bytes) || 0;
+    label.textContent = ' · ' + formatBytes(bytes);
+  }).catch(() => {
+    label.textContent = '';
+  });
+}
+
+/** 字节数转成好读的写法，清缓存后用。 */
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+  return bytes + ' B';
+}
+
+/** 清视频分片缓存和网页缓存；收藏、历史、登录态不在缓存目录，动不到。 */
+async function clearAppCache() {
+  const tip = document.getElementById('about-cache-tip');
+  if (tip) tip.textContent = '正在清理…';
+  try {
+    const reply = await api('clear-cache');
+    const text = formatBytes(Number(reply && reply.freed) || 0);
+    if (tip) tip.textContent = '已清理 ' + text;
+    toast('已清理 ' + text + ' 缓存');
+    refreshCacheSize();
+  } catch (error) {
+    if (tip) tip.textContent = '清理失败';
+    toast((error && error.message) || '清理失败', true);
+  }
 }
 function ensureAboutPop() {
   if (aboutPop && document.body.contains(aboutPop)) return aboutPop;
@@ -2070,6 +2206,19 @@ function openAboutPop() {
   aboutPop.innerHTML = buildAboutPopHtml();
   aboutPop.hidden = false;
   document.body.classList.add('appearance-open');
+  refreshCacheSize();
+  // 版本号取一次就缓存：App 更新后页面会重载，state 自然重置
+  if (!state.appVersion) {
+    api('app-version').then(name => {
+      if (!name) return;
+      state.appVersion = String(name);
+      const label = document.getElementById('about-version');
+      if (label) label.textContent = '版本 ' + state.appVersion;
+    }).catch(() => {
+      const label = document.getElementById('about-version');
+      if (label) label.textContent = '版本未知';
+    });
+  }
 }
 function closeAboutPop() {
   if (!aboutPop || aboutPop.hidden) return;
@@ -2093,7 +2242,8 @@ function buildHgLoginHtml() {
       <p class="appearance-note">已登录：<strong>${esc(cloud.nickname || '红果用户')}</strong></p>
       <div class="hg-actions"><button type="button" data-hg-open-cloud>查看云端观看记录</button>
       <button type="button" data-hg-cloud-refresh>重新同步</button></div>
-      <div class="hg-actions"><button type="button" class="hg-danger" data-hg-logout>退出登录</button></div>
+      <div class="hg-actions"><button type="button" class="hg-danger" data-hg-logout>退出登录</button>
+      <button type="button" data-hg-raw>诊断数据</button></div>
       <p class="appearance-note">登录凭据用系统密钥加密后只存在这台设备上，不会上传到任何服务器。</p></div>`;
   }
   if (cloud.qr) {
@@ -2102,8 +2252,9 @@ function buildHgLoginHtml() {
       : esc(cloud.loginStatus || '等待红果短剧 App 扫码确认…');
     return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true">${head}
       <div class="hg-qr"><img src="data:image/png;base64,${cloud.qr}" alt="登录二维码"></div>
-      <p class="appearance-note">点下面的按钮把二维码<strong>存进相册</strong>，再打开 <strong>红果短剧 App → 扫一扫 → 右上角「相册」</strong>，选中刚存的那张图，在 App 里点确认，然后回到这里。</p>
+      <p class="appearance-note">点下面的按钮把二维码<strong>存进相册</strong>，再打开 <strong>红果短剧 App → 扫一扫 → 下方「相册」</strong>，选中刚存的那张图，在 App 里点确认，然后回到这里。</p>
       <div class="hg-actions"><button type="button" data-hg-save>保存二维码到相册</button>
+      <button type="button" data-hg-open>打开红果 App</button>
       <button type="button" data-hg-restart>换一张</button></div>
       <p class="appearance-note hg-status">${status}</p></div>`;
   }
@@ -2201,7 +2352,7 @@ function scheduleHgPoll(deadline) {
         state.cloud.error = '';
         repaintHgLogin();
         toast(`已登录：${state.cloud.nickname || '红果账号'}`);
-        if (state.route === 'library' && state.libraryTab === 'cloud') loadCloudHistory(true);
+        if (state.route === 'library') { renderLibrary(); loadCloudHistory(true); }
         return;
       }
     } catch (error) {
@@ -2224,11 +2375,36 @@ async function saveHgQr() {
   if (!cloud.qr) return;
   try {
     await api('hg-qr-save', { data: cloud.qr });
-    toast('已保存到相册，去红果短剧 App「扫一扫 → 相册」里选它');
   } catch (error) {
     toast((error && error.message) || '保存失败，可以先截屏再用红果短剧 App 扫截图', true);
+    return;
+  }
+  // 存完直接把红果 App 拉起来，用户只需要在里面点「扫一扫 → 相册」
+  const opened = await openHgApp();
+  toast(opened
+    ? '已保存，正在打开红果短剧 App — 点「扫一扫 → 相册」选刚存的那张'
+    : '已保存到相册，请手动打开红果短剧 App 的「扫一扫 → 相册」');
+}
+
+/** 拉起红果短剧 App；成功时先停轮询（切到后台定时器会被挂起，回来再续）。 */
+async function openHgApp() {
+  try {
+    const reply = await api('hg-open-app');
+    if (reply && reply.ok) { stopHgPoll(); return true; }
+    return false;
+  } catch (error) {
+    return false;
   }
 }
+
+// 从红果 App 扫完回来，立刻继续等结果（后台期间定时器是停的）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const cloud = state.cloud;
+  if (!hgLoginPop || hgLoginPop.hidden || cloud.loggedIn || !cloud.qr) return;
+  if (!cloud.qrDeadline || Date.now() > cloud.qrDeadline) return;
+  scheduleHgPoll(cloud.qrDeadline);
+});
 
 async function logoutHgAccount() {
   try {
@@ -2237,10 +2413,12 @@ async function logoutHgAccount() {
     state.cloud.nickname = '';
     state.cloud.qr = '';
     state.cloud.items = null;
+    state.cloud.favorites = null;
+    state.cloud.reservations = null;
     state.cloud.error = '';
     repaintHgLogin();
     toast('已退出红果账号');
-    if (state.route === 'library' && state.libraryTab === 'cloud') renderLibrary();
+    if (state.route === 'library') renderLibrary();
   } catch (error) {
     toast((error && error.message) || '退出失败', true);
   }
@@ -3188,7 +3366,9 @@ async function goLibrary(tab = 'history') {
   setRoute('library'); state.tab = 'library'; setNav('library');
   if (!adopted) renderSkeleton();
   try {
-    const library = await api('library'); if (token !== routeToken) return; state.library = library;
+    // 登录态和本地片单一起等：不等的话首帧会先按"未登录"渲染一遍本地历史
+    const [library] = await Promise.all([api('library'), ensureHongguoAccount()]);
+    if (token !== routeToken) return; state.library = library;
     if (adopted) {
       // DOM 已落位，只补图片；但下载页的任务进度要实时，交给它自己刷列表
       try { hydrateImages(); } catch (ignore) { }
@@ -4301,6 +4481,7 @@ document.addEventListener('click', async event => {
   if (publicCategory) { goCategory(publicCategory.dataset.publicCategory); return; }
   if (event.target.closest('[data-return-public]')) { await api('leave-private'); location.reload(); return; }
   if (event.target.closest('[data-check-update]')) { checkUpdate(true); return; }
+  if (event.target.closest('[data-clear-cache]')) { clearAppCache(); return; }
   if (event.target.closest('[data-check-resources]')) {
     const button = event.target.closest('[data-check-resources]');
     button.disabled = true;
@@ -4322,13 +4503,36 @@ document.addEventListener('click', async event => {
   if (event.target.closest('[data-hg-account-open]')) { openHgLoginPop(); return; }
   if (event.target.closest('[data-hg-start]') || event.target.closest('[data-hg-restart]')) { startHgLogin(); return; }
   if (event.target.closest('[data-hg-save]')) { saveHgQr(); return; }
+  if (event.target.closest('[data-hg-open]')) {
+    openHgApp().then(ok => { if (!ok) toast('没找到红果短剧 App，请先安装', true); });
+    return;
+  }
   if (event.target.closest('[data-hg-logout]')) { logoutHgAccount(); return; }
-  if (event.target.closest('[data-hg-open-cloud]')) { closeHgLoginPop(); goLibrary('cloud'); return; }
+  if (event.target.closest('[data-hg-open-cloud]')) { closeHgLoginPop(); goLibrary('history'); return; }
   if (event.target.closest('[data-hg-cloud-refresh]')) {
     closeHgLoginPop();
-    // 列表已经有内容时不置空，刷新期间保留旧记录，只在顶部提示"正在更新"
-    if (state.route === 'library' && state.libraryTab === 'cloud') loadCloudHistory(true);
-    else { state.cloud.items = null; goLibrary('cloud'); }
+    // 三个列表一起作废，切到哪个 tab 就拉哪个
+    state.cloud.items = null;
+    state.cloud.favorites = null;
+    state.cloud.reservations = null;
+    state.cloud.error = '';
+    state.cloud.favoritesError = '';
+    state.cloud.reservationsError = '';
+    if (state.route === 'library') {
+      const tab = state.libraryTab;
+      renderLibrary();
+      if (tab === 'history') loadCloudHistory(true);
+      else if (tab === 'bookmarks') loadCloudFavorites(true);
+      else if (tab === 'reservations') loadCloudReservations(true);
+    }
+    return;
+  }
+  if (event.target.closest('[data-hg-raw]')) {
+    api('hg-raw').then(reply => {
+      const dump = (reply && reply.dump) || '';
+      if (!dump) throw new Error('没有拿到数据，先确认已登录');
+      return api('hg-copy', { text: dump }).then(() => toast('原始数据已复制到剪贴板'));
+    }).catch(error => toast((error && error.message) || '导出失败', true));
     return;
   }
   // ---- 远程服务器配置 ----
@@ -4395,6 +4599,14 @@ document.addEventListener('click', async event => {
     const id = event.target.closest('[data-dl-transfer-cancel]').dataset.dlTransferCancel;
     api('remote-transfer-cancel', { id }).then(() => { toast('已取消传输'); refreshCurrentDownloads(); }).catch(error => toast(error.message, true));
     return;
+  }
+  const copyTarget = event.target.closest('[data-copy-text]');
+  if (copyTarget) {
+    const text = copyTarget.dataset.copyText || '';
+    if (text) {
+      api('hg-copy', { text }).then(() => toast('已复制：' + text)).catch(() => toast('复制失败', true));
+      return;
+    }
   }
   const openUrl = event.target.closest('[data-open-url]');
   if (openUrl) {

@@ -33,9 +33,9 @@ final class UpdateManager {
     private static final String STATIC_UPDATE = "http://101.201.32.104/update/latest.json";
     private static final String STATIC_BASE = "http://101.201.32.104/update/";
     /** GitHub 兜底开关：关掉后不会再去官方仓库，避免下载官方包（签名不同装不上）。 */
-    private static final boolean USE_GITHUB_FALLBACK = false;
-    private static final String RELEASE_API = "https://api.github.com/repos/gybeyond1/Veyra/releases/latest";
-    private static final String RELEASE_BASE = "https://github.com/gybeyond1/Veyra/releases/download/";
+    private static final boolean USE_GITHUB_FALLBACK = true;
+    private static final String RELEASE_API = "https://api.github.com/repos/voice-317418365/binguo/releases/latest";
+    private static final String RELEASE_BASE = "https://github.com/voice-317418365/binguo/releases/download/";
     private static final Pattern VERSION = Pattern.compile("\\d+\\.\\d+\\.\\d+");
     /** 附件名里单独出现的 tv 记号：Veyra-TV-0.24.3.apk / veyra.tv.apk / veyra_tv_x.apk 都算。 */
     private static final Pattern TV_MARK = Pattern.compile("(?i)(^|[-_.])tv([-_.]|$)");
@@ -183,8 +183,8 @@ final class UpdateManager {
         String localVersion = installed.versionName;
 
         // 静态源优先：自己的 nginx 托管 /update/latest.json，是唯一权威来源。
-        // 有结果就直接返回，不再往下问后端、也不回退 GitHub ——
-        // GitHub 上是官方版，签名和我们对不上，下载完装不进去，只会让用户以为更新坏了。
+        // 静态源有结果就直接返回，不再问后端、也不回退 GitHub：
+        // 三条腿的版本号可能不同步，混着用容易出现"提示更新到旧版"这种怪事。
         JSONObject viaStatic = tryStatic();
         if (viaStatic != null) {
             if (!isNewer(viaStatic.optString("versionName"), localVersion)) {
@@ -562,9 +562,13 @@ final class UpdateManager {
         return manifest;
     }
 
-    /** 拉取 GitHub Releases API latest；404 表示还没发过版。 */
+    /**
+     * 拉取 GitHub Releases API latest；404 表示还没发过版。
+     *
+     * <p>指向自己的仓库（voice-317418365/binguo），不是上游——上游包签名不同，
+     * 下载完装不进去。自己仓库没发过 Release 时返回 null，界面显示"已是最新"。
+     */
     private static JSONObject fetchRelease() throws Exception {
-        // 已停用 GitHub 兜底：官方包签名不同，下载完装不进去
         if (!USE_GITHUB_FALLBACK) return null;
         HttpURLConnection connection = (HttpURLConnection) new URL(RELEASE_API).openConnection();
         connection.setConnectTimeout(15_000);

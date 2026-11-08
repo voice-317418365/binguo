@@ -10,6 +10,10 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- 扫码登录时要把二维码丢给红果 App 去扫，Android 11+ 不声明就查不到这个包 -->
+    <queries>
+        <package android:name="com.phoenix.read" />
+    </queries>
     <application
         android:name=".HuangGuoApp"
         android:allowBackup="false"

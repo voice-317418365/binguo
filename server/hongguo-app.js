@@ -15,11 +15,14 @@ const hgSign = require('./hongguo-sign');
 const BASE = 'https://api5-normal-sinfonlineb.fqnovel.com';
 /**
  * 账号类接口（资料/历史/收藏/预约）走另一套：
- * host 是 sinfonlinea 而不是 b，aid 是红果的 513755 而不是番茄的 8662。
- * 两者混用会得到 READ_HISTORY_GET_ERROR / 用户未登录。
+ * host 是 sinfonlinea 而不是 b，aid 必须用番茄的 8662。
+ *
+ * 实测（2026-11-08）：aid=513755（红果）能拿到账号资料和收藏，但观看历史恒定返回
+ * 101112 READ_HISTORY_GET_ERROR；换成 8662 立刻返回真实的 video_data。
+ * 两边不是同一套应用注册，历史数据只挂在番茄的 aid 下。
  */
 const ACCOUNT_BASE = 'https://api5-normal-sinfonlinea.fqnovel.com';
-const ACCOUNT_AID = '513755';
+const ACCOUNT_AID = '8662';
 const UA = 'com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 // 与 APK HongguoSigner 一致的固定设备参数（注册成功后 device_id/iid 会覆盖）
 const FIXED_DEVICE = {

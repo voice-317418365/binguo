@@ -157,48 +157,70 @@ class CloudAccountClient(private val http: OkHttpClient) {
         return CloudProfile(id, data.str("user_name").ifBlank { "红果用户" })
     }
 
+    /**
+     * 原始历史响应，不做任何字段映射。
+     *
+     * <p>存在的理由：这个接口的字段名在不同版本里变过，靠猜会得到"有剧名但进度全是 0、
+     * 封面全空"的结果。留一个口子把原始 JSON 导出来，才能在真实数据上对齐字段。
+     */
+    fun historyRaw(credentials: AccountCredentials): JSONObject =
+        json(
+            credentials,
+            "/reading/bookapi/read_history/list/v1/",
+            mapOf("book_type" to "2", "count" to "20"),
+        )
+
+    fun detailRaw(credentials: AccountCredentials, ids: String): JSONObject =
+        json(
+            credentials,
+            "/reading/bookapi/multi-detail/v1/",
+            mapOf("book_id" to ids, "book_type" to "2"),
+        )
+
+    /**
+     * 观看历史列表。
+     *
+     * <p>接口是 {@code read_history/list}，不是 {@code read_progress/list}——后者是
+     * "阅读进度"，混着小说和视频，而且只在特定场景回写（实测逛了一圈也才 20 条）。
+     * 前者才是红果 App「我的 → 历史」的那份数据：一次返回 130+ 条，直接带书名、
+     * 封面、集号、集数和播放位置，不用再拿 id 去查详情。
+     *
+     * <p>{@code book_type=2} 必须显式传：不传默认按 0（小说）筛，只剩一条。
+     */
     fun history(credentials: AccountCredentials): List<CloudProgress> {
+        // 注意：json() 返回的是整个响应 {code, message, data}，data_list 在 data 里面，
+        // 少取一层就会得到 null，报"格式已变化"。
         val data =
             json(
                 credentials,
-                "/reading/bookapi/read_progress/list/v1/",
-                mapOf("book_types" to "2", "limit" to "50"),
-            )
-        val rows =
-            data.optJSONArray("video_data")
-                ?: data.optJSONObject("data")?.optJSONArray("video_data")
-                ?: throw IOException("云端历史数据格式已变化")
-        val progress = parseProgress(rows)
-        if (progress.isEmpty()) return emptyList()
-        val details =
-            json(
-                    credentials,
-                    "/reading/bookapi/multi-detail/v1/",
-                    mapOf(
-                        "book_id" to progress.map { it.series.id }.joinToString(","),
-                        "book_type" to "2",
-                    ),
+                "/reading/bookapi/read_history/list/v1/",
+                mapOf("book_type" to "2", "count" to "60"),
+            ).optJSONObject("data") ?: throw IOException("云端历史数据为空")
+        val rows = data.optJSONArray("data_list") ?: throw IOException("云端历史数据格式已变化")
+        return rows
+            .objects()
+            .mapNotNull { row ->
+                // book_id 是 19 位整数，走 JSON number 在有些实现里会丢精度，优先取字符串版
+                val id = row.str("book_id_str").ifEmpty { row.str("book_id") }
+                if (!id.matches(Regex("[0-9]{1,30}"))) return@mapNotNull null
+                val stamp =
+                    row.optLong("read_timestamp_ms").let {
+                        if (it in 1..9999999999L) it * 1000 else it
+                    }
+                CloudProgress(
+                    Series(id, row.str("book_name"), cleanUrl(row.str("thumb_url")), "", ""),
+                    row.str("vid"),
+                    // vid_index 是 1 基（第 1 集 = 1），0 表示"进了历史但还没开始看"。
+                    // 这里统一转成 0 基，前端 +1 显示。
+                    (row.optInt("vid_index", 0) - 1).coerceAtLeast(0),
+                    row.optLong("current_play_position").coerceAtLeast(0),
+                    row.optLong("duration").coerceAtLeast(0),
+                    stamp,
+                    row.optInt("episode_cnt").coerceAtLeast(0),
                 )
-                .optJSONArray("data") ?: throw IOException("云端剧集资料格式已变化")
-        val series =
-            details.objects().associate { row ->
-                // 封面字段在这几个接口里换过名字，逐个兜底，别让海报整片空着
-                val cover =
-                    row.str("thumb_url").ifEmpty { row.str("horiz_thumb_url") }
-                        .ifEmpty { row.str("cover_url") }
-                        .ifEmpty { row.str("thumb_uri") }
-                row.str("book_id") to
-                    Series(
-                        row.str("book_id"),
-                        row.str("book_name"),
-                        cleanUrl(cover),
-                        row.str("abstract"),
-                        episodeBadge(row),
-                    )
             }
-        return progress.map {
-            it.copy(series = series[it.series.id] ?: it.series.copy(title = "剧集 ${it.series.id}"))
-        }
+            .distinctBy { it.series.id }
+            .sortedByDescending { it.updatedAt }
     }
 
     /** Read-only video shelf. Protocol reference: charlie901208/HGTV AccountParser.favorites. */

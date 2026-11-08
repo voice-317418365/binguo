@@ -15,21 +15,121 @@
 | NAS 下载合并 | 支持 | 入口已移除 |
 | 私密内容源 | 黄果 / 剧果 / 野果 / 禁果 | 入口已隐藏（红果源保留） |
 | 账号管理 | 设置页有入口 | 入口已隐藏（右上角头像仍可用） |
+| **红果账号** | 无 | **扫码登录，同步官方观看历史 / 收藏 / 预约，播放进度回传** |
+| **播放器倍速** | 0.5 / 0.75 / 1 / 1.25 / 2 / 3 | **新增 1.5×** |
 | 外观默认 | 玻璃材质开 | **默认关闭** |
 | 热更新 | 官方 GitHub 通道 | **自建静态源**，自签 ECDSA 密钥 |
-| 版本更新 | 官方 Release | **自建静态 `latest.json`** |
-| 关于页 | 显示项目地址 | 只保留检查更新 |
+| 版本更新 | 官方 Release | **自建静态 `latest.json`**，GitHub 兜底指向本仓库 |
+| 关于页 | 项目地址 + 检查更新 | 版本号、检查更新、清除缓存（显示占用）、项目地址、赞助 |
 
-这些改动集中在 `scripts/brand-patch.py` 里，构建时自动重放，不影响上游代码的其他部分。
+这些改动集中在 `scripts/brand-patch.py` 里，构建时自动重放（幂等，已打过就跳过），`build-mine.ps1` 每次编译前都会跑一遍。当前包含：
+
+| 补丁 | 作用 |
+|---|---|
+| 免登录 | 去掉启动时的强制登录跳转 |
+| 文案 | 应用内 Veyra → 彬果（6 处） |
+| 账号管理 | 隐藏设置页入口 |
+| 外观 | 玻璃材质默认关闭 |
+| 私密源 | 隐藏「私密内容源」「黄果网络通道」 |
+| 我的页 | 隐藏登录提示按钮 |
+
+跑完会打印每条规则的命中情况。`git rebase` 上游新版后看这份报告：哪条报"未找到"就说明上游改了那块代码，改一行正则即可。
+
+> 关于弹窗、红果账号、我的页四个 tab 这些结构改动较大，直接写在源码里（不经过补丁脚本），rebase 时如果冲突需要手工合并。
 
 ## 功能
 
-- 沉浸式刷剧、自动连播、倍速、清晰度切换
+- 沉浸式刷剧、自动连播、倍速（含 **1.5×**）、清晰度切换
 - 搜索、分类、排行榜、追更提醒
 - 收藏、观看历史、进度记忆
+- **红果账号扫码登录**：同步官方观看历史 / 收藏 / 预约，播放时把进度回传
 - 下载到本机，离线观看
 - 手机 / 平板 / 电视同一套代码（`mobile` / `tv` flavor）
 - 外观自定义：配色、圆角、按钮材质、动效
+- 设置 → 关于：版本号、自建更新检查、清除缓存（显示当前占用）
+
+## 红果账号同步
+
+设置 → 红果账号。登录后，「我的」页的观看历史 / 收藏 / 预约都直接读账号云端数据，不再只看本机记录。
+
+### 扫码为什么走「存相册」这条路
+
+红果的网页登录页对第三方整体封死了：
+
+```
+GET hongguoduanju.com/passport/web/login/      → error_code: 16（该应用无权限）
+GET hongguoduanju.com/passport/web/sms/send_code/ → 同样 16
+GET hongguoduanju.com/passport/web/get_qrcode/  → ✅ 正常返回二维码
+```
+
+只有扫码接口是放行的。而手机端没法自己扫自己，所以流程是：
+
+```
+App 生成二维码 → 「保存到相册」
+                    ↓
+红果短剧 App → 扫一扫 → 下方「相册」→ 选中刚存的那张图 → 确认
+                    ↓
+App 轮询到登录态 → 完成（保存后会自动拉起红果 App）
+```
+
+### 用到的接口
+
+| 用途 | 接口 |
+|---|---|
+| 二维码 / 轮询 | `hongguoduanju.com/passport/web/get_qrcode|check_qrconnect/` |
+| 观看历史 | `read_history/list/v1/?book_type=2&count=60` |
+| 收藏列表 | `bookshelf/video/info/v1/` |
+| 收藏增删 | `bookshelf/video/update/v1/` |
+| 预约 / 追更 | `user/subscribe/list/v0/?is_online=true|false` |
+| 进度回传 | `read_progress/upload/v1/`（POST） |
+
+账号接口的 host 和播放接口不同：
+
+| 用途 | host | aid |
+|---|---|---|
+| 播放 / 内容 | `api5-normal-sinfonline**b**.fqnovel.com` | `8662` |
+| 账号 / 历史 / 收藏 | `api5-normal-sinfonline**a**.fqnovel.com` | `8662` |
+
+**aid 必须是 8662**。用红果的 `513755` 能拿到账号资料和收藏，但观看历史恒定返回 `101112 READ_HISTORY_GET_ERROR`，很容易误判成"这个账号没有历史"。
+
+### 三个踩过的坑
+
+**1. `read_history` 不是 `read_progress`**
+
+`read_progress/list` 是"阅读进度"，混着小说和视频，只在特定场景回写（实测只有 20 条）；`read_history/list` 才是红果 App「我的 → 历史」那份数据，一次 130+ 条，直接带书名、封面、集号、集数和播放位置，不用再逐条查详情。
+
+`book_type=2` 必须显式传，不传默认按 0（小说）筛，只剩一条。
+
+**2. 封面是 HEIC**
+
+`multi-detail` 返回的 `thumb_url` 是 `~tplv-noop.heic`，Android WebView 解不了 HEIC，下载成功也显示不出来。改用 `thumb_uri` 拼公开 CDN 的 JPEG：
+
+```
+https://p6-novel.byteimg.com/{thumb_uri}~tplv-shrink:640:0.image
+```
+
+`read_history` 自己返回的 `thumb_url` 就是 JPEG，不受影响。
+
+**3. 签名 URL 里的 `%2B`**
+
+带签名的图片地址里有 `x-signature=...%2B...`。OkHttp 的 `HttpUrl` 解析时会把 `%2B` 规范化成字面 `+`，服务器当空格处理 → 签名失效 → 403。所以封面下载走 `HttpURLConnection`（按字符串原样发）。
+
+### 进度回传的保守设定
+
+- 未登录跳过（不替游客写数据）
+- 位置为 0 不报（免得把红果那边的记录改成"未开始"）
+- 同一集 3 分钟内只报一次，换集立刻报
+- 后台线程执行，失败只记日志
+
+### 限制
+
+- **红果网页版的观看记录不会同步**：网页版没有登录入口，记录只存在浏览器 localStorage
+- 红果和番茄小说共用字节的阅读账号体系，历史里可能混入非短剧内容
+- 非官方客户端调账号接口有风控风险，账号在做金币提现的话建议别用
+
+### 凭据怎么存
+
+`SecureStore.java`：Android Keystore 生成 AES-256 密钥，AES/GCM 加密后写 SharedPreferences。密钥不出芯片，文件被拷走也解不开。**cookie 不上传任何服务器**，所以这个功能对服务端零依赖。
 
 ## 构建
 
@@ -79,7 +179,7 @@ Windows 上可以直接用：
 ```powershell
 .\build-mine.ps1                          # 编手机版
 .\build-mine.ps1 -Tv                      # 编电视版
-.\build-mine.ps1 -VersionName 0.28.1408 -VersionCode 41408 -Publish
+.\build-mine.ps1 -VersionName 0.28.1430 -VersionCode 41430 -Publish
 ```
 
 `-Publish` 会额外生成一份 `Veyra-<版本>.apk` 命名的副本（某些更新分发逻辑依赖这个前缀）。
@@ -101,8 +201,8 @@ private static final String STATIC_BASE   = "http://your-server/update/";
 
 ```json
 {
-  "version": "0.28.1408",
-  "apk": "Binguo-0.28.1408.apk",
+  "version": "0.28.1430",
+  "apk": "Binguo-0.28.1430.apk",
   "sha256": "……64位小写十六进制……",
   "size": 13416244,
   "notes": "更新说明"
@@ -116,6 +216,28 @@ private static final String STATIC_BASE   = "http://your-server/update/";
 ```
 
 注意 `version` 必须严格是三段数字（`\d+\.\d+\.\d+`），客户端用它和本地版本做数值比较——**完全相等时判定"没有新版本"**，所以每次发布都要让版本号真的变大。
+
+### 检查顺序与 GitHub 兜底
+
+```
+静态源 latest.json  →  后端（配了才问）→  GitHub Releases
+```
+
+静态源拿到结果就直接返回，不会三条腿混着用（版本号不同步会出现"提示更新到旧版"）。
+
+GitHub 兜底指向本仓库，不是上游（上游包签名不同，下载完装不进去）：
+
+```java
+private static final boolean USE_GITHUB_FALLBACK = true;
+private static final String RELEASE_API  = "https://api.github.com/repos/voice-317418365/binguo/releases/latest";
+private static final String RELEASE_BASE = "https://github.com/voice-317418365/binguo/releases/download/";
+```
+
+发 Release 时：
+
+- tag 用 `v<版本>` 格式（如 `v0.28.1430`）
+- asset 文件名要和静态源一致（`Binguo-0.28.1430.apk`），下载时文件名是从 URL 末段推出来的
+- 仓库还没发过 Release 时 API 返回 404，客户端直接当作"已是最新"，不报错
 
 ### 2. 前端热更新（只换 assets）
 
@@ -141,7 +263,7 @@ python scripts/sign-hot-update.py \
   --base-url http://your-server/hot-update \
   --revision 1001 \
   --version 2026.11.08.1 \
-  --min-version-code 41408 \
+  --min-version-code 41430 \
   --site app/src/main/assets/site-default.json \
   --theme hot/theme.json \
   --ui-dir hot/ui \

@@ -1118,6 +1118,24 @@ public final class MainActivity extends Activity {
         store.activateUser(account.userId());
     }
 
+    /** 目录占用字节数（递归）。 */
+    private static long directorySize(java.io.File file) {
+        if (file == null || !file.exists()) return 0;
+        if (file.isFile()) return file.length();
+        long total = 0;
+        java.io.File[] children = file.listFiles();
+        if (children != null) for (java.io.File child : children) total += directorySize(child);
+        return total;
+    }
+
+    private static void deleteTree(java.io.File file) {
+        if (file == null || !file.exists()) return;
+        java.io.File[] children = file.listFiles();
+        if (children != null) for (java.io.File child : children) deleteTree(child);
+        //noinspection ResultOfMethodCallIgnored
+        file.delete();
+    }
+
     private Object dispatch(String action, JSONObject args) throws Exception {
         ContentMode mode = ContentMode.get(this);
         if ("server-base".equals(action)) return ServerConfig.get(this);   // 当前后端地址（登录页预填用）
@@ -1130,8 +1148,11 @@ public final class MainActivity extends Activity {
             JSONObject status = mode.status();
             String role = account.role();
             boolean priv = "admin".equals(role) || "vip".equals(role);
-            status.put("unlocked", account.isPrivateUnlocked() || priv); // 管理员/特权组免动态码，视为已解锁
-            status.put("needsAgeConfirmation", (account.isPrivateUnlocked() || priv) && !mode.adultConfirmed());
+            // 没登录账号 = 没配后端：动态码没有校验方，私密模式不能再拦人，
+            // 否则黄果入口点进去只会卡在「动态码」弹窗上。配了后端仍按角色/解锁标记走。
+            boolean unlocked = !account.isLoggedIn() || account.isPrivateUnlocked() || priv;
+            status.put("unlocked", unlocked);
+            status.put("needsAgeConfirmation", unlocked && !mode.adultConfirmed());
             return status;
         }
         if ("enter-private".equals(action)) {
@@ -1141,7 +1162,9 @@ public final class MainActivity extends Activity {
             String role = account.role();
             if (args.optBoolean("forceOtp", false)) {
                 account.verifyOtp(args.optString("password"));
-            } else if (!account.isPrivateUnlocked() && !"admin".equals(role) && !"vip".equals(role)) {
+            } else if (account.isLoggedIn()
+                    && !account.isPrivateUnlocked() && !"admin".equals(role) && !"vip".equals(role)) {
+                // 没登录账号说明没配后端，动态码无处校验，直接放行（与 content-status 的判断保持一致）
                 account.verifyOtp(args.optString("password"));
             }
             mode.markPrivateUnlocked();
@@ -1260,14 +1283,66 @@ public final class MainActivity extends Activity {
                 return new JSONObject().put("ok", true);
             }
             case "hg-logout": HongguoAccount.get(this).logout(); return new JSONObject().put("ok", true);
+            case "hg-open-app": {
+                // 二维码存进相册后把红果 App 拉起来，用户直接去「扫一扫 → 相册」选图。
+                // 包名 com.phoenix.read（红果免费短剧）；没装就返回 false，界面给手动提示。
+                Intent launch = getPackageManager().getLaunchIntentForPackage("com.phoenix.read");
+                if (launch == null) return new JSONObject().put("ok", false);
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                final Intent target = launch;
+                runOnUiThread(() -> {
+                    try {
+                        startActivity(target);
+                    } catch (Exception error) {
+                        Log.w(TAG, "拉起红果 App 失败", error);
+                    }
+                });
+                return new JSONObject().put("ok", true);
+            }
             case "hg-profile": return HongguoAccount.get(this).profile();
             case "hg-history": return HongguoAccount.get(this).history();
+            case "hg-raw": return new JSONObject().put("dump", HongguoAccount.get(this).rawDump());
+            case "hg-copy": {
+                String text = args.optString("text");
+                runOnUiThread(() -> {
+                    android.content.ClipboardManager clipboard =
+                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("hongguo-raw", text));
+                    }
+                });
+                return new JSONObject().put("ok", true);
+            }
             case "hg-favorites": return HongguoAccount.get(this).favorites();
+            case "hg-reservations": return HongguoAccount.get(this).reservations();
             case "hg-favorite-set": {
                 HongguoAccount.get(this).setFavorite(args.optString("id"), args.optBoolean("add"));
                 return new JSONObject().put("ok", true);
             }
             case "hot-update-status": return hotUpdates.status().put("enabled", !HotUpdateManager.INDEX.isEmpty());
+            case "cache-size": {
+                // 与 clear-cache 清理的范围保持一致，按钮上显示的数字才和实际清掉的对得上
+                long bytes = directorySize(new java.io.File(getCacheDir(), "video-segments"))
+                        + directorySize(new java.io.File(getCacheDir(), "image_cache"));
+                return new JSONObject().put("bytes", bytes);
+            }
+            case "clear-cache": {
+                // 只清"能再生成"的东西：视频分片缓存 + WebView 的 HTTP 缓存。
+                // 收藏、观看记录、登录态都不在 cache 目录，不受影响。
+                long freed = 0;
+                try {
+                    java.io.File segments = new java.io.File(getCacheDir(), "video-segments");
+                    freed += directorySize(segments);
+                    VideoPlaybackCache.release();
+                    deleteTree(segments);
+                    freed += directorySize(new java.io.File(getCacheDir(), "image_cache"));
+                    deleteTree(new java.io.File(getCacheDir(), "image_cache"));
+                    if (webView != null) runOnUiThread(() -> webView.clearCache(true));
+                } catch (Exception error) {
+                    Log.w(TAG, "清理缓存失败", error);
+                }
+                return new JSONObject().put("freed", freed);
+            }
             case "check-hot-update": return hotUpdates.check(true);
             case "apply-hot-update": runOnUiThread(this::applyPendingResources); return true;
             case "age-status": return ContentMode.PUBLIC.equals(mode.active()) || mode.adultConfirmed();

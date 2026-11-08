@@ -83,6 +83,8 @@ final class HongguoRepository {
         StreamInfo info = upstream.stream(id, detail.getEpisodes().get(number - 1), 1080);
         HongguoPlayback.register(info);
         JSONObject result = new JSONObject().put("id", id).put("episode", number)
+                // vid 是这一集的视频 id，进度回传要用；顺手透出来省得播放器再查一次
+                .put("vid", detail.getEpisodes().get(number - 1))
                 .put("source", info.getUrl())
                 .put("mimeType", "video/mp4").put("quality", info.getQuality())
                 .put("title", detail.getSeries().getTitle()).put("cover", detail.getSeries().getCover());
@@ -100,7 +102,14 @@ final class HongguoRepository {
         // 不转会被判成非法地址，表现就是"云端列表有剧名但海报全空"。
         String raw = url == null ? "" : url.trim();
         if (raw.isEmpty()) throw new IllegalArgumentException("无效封面地址");
-        java.util.List<String> candidates = new java.util.ArrayList<>(2);
+        java.util.List<String> candidates = new java.util.ArrayList<>(3);
+        // HEIC 一律先换成公开 CDN 的 JPEG：Android WebView 不支持 HEIC 解码，
+        // 这类地址即使下载成功也显示不出来（云端历史的 thumb_url 就是 .heic）。
+        String jpeg = heicToJpeg(raw);
+        if (jpeg != null) {
+            candidates.add("https://p6-novel.byteimg.com/" + jpeg);
+            candidates.add("https://p3-novel.byteimg.com/" + jpeg);
+        }
         if (raw.startsWith("//")) {
             candidates.add("https:" + raw);
         } else if (raw.startsWith("http://")) {
@@ -122,14 +131,51 @@ final class HongguoRepository {
         throw failure == null ? new IllegalStateException("封面加载失败") : failure;
     }
 
+    /**
+     * 从 {@code .../novel-pic/{id}~tplv-xxx.heic?...} 里剥出 {@code novel-pic/{id}~tplv-shrink:640:0.image}。
+     * 不是 HEIC 形态时返回 null。
+     */
+    private static String heicToJpeg(String url) {
+        if (url.indexOf(".heic") < 0) return null;
+        int at = url.indexOf("/novel-pic/");
+        if (at < 0) return null;
+        int start = at + 1;               // 从 novel-pic/ 开始，不要前导斜杠
+        int end = url.indexOf('~', start);
+        if (end < 0) end = url.indexOf('?', start);
+        if (end < 0) end = url.length();
+        String id = url.substring(start, end);
+        if (id.isEmpty()) return null;
+        return id + "~tplv-shrink:640:0.image";
+    }
+
     private String fetchCover(String url) throws Exception {
-        Request request = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
-        try (Response response = upstream.getHttp().newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) throw new IllegalStateException("封面加载失败");
-            byte[] bytes = response.body().bytes();
-            if (bytes.length > 5 * 1024 * 1024) throw new IllegalStateException("封面过大");
-            String mime = response.header("Content-Type", "image/jpeg").split(";")[0];
-            return "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
+        // 这里刻意不用 OkHttp：它的 HttpUrl 会把 query 里的 %2B 规范化成字面 "+"，
+        // 而字节的图片签名把 "+" 当空格解析，签名就对不上，返回 403。
+        // HttpURLConnection 直接按字符串发，%2B 原样保留，才能下到图。
+        java.net.HttpURLConnection connection =
+                (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0");
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(20000);
+        connection.setInstanceFollowRedirects(true);
+        try {
+            int code = connection.getResponseCode();
+            if (code != 200) throw new IllegalStateException("封面加载失败（HTTP " + code + "）");
+            java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream input = connection.getInputStream()) {
+                byte[] chunk = new byte[8192];
+                int read;
+                while ((read = input.read(chunk)) > 0) {
+                    buffer.write(chunk, 0, read);
+                    if (buffer.size() > 5 * 1024 * 1024) throw new IllegalStateException("封面过大");
+                }
+            }
+            String type = connection.getContentType();
+            String mime = type == null ? "image/jpeg" : type.split(";")[0];
+            if (!mime.startsWith("image/")) mime = "image/jpeg";
+            return "data:" + mime + ";base64," + Base64.encodeToString(buffer.toByteArray(), Base64.NO_WRAP);
+        } finally {
+            connection.disconnect();
         }
     }
 }

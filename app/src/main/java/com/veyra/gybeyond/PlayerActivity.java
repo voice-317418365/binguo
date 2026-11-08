@@ -199,6 +199,8 @@ public final class PlayerActivity extends Activity {
     private long lastSaved;
     private boolean seeking;
     private String currentSource;
+    /** 当前这一集的视频 id，进度回传到红果账号时要用。 */
+    private String currentVid = "";
     private String currentMime = MimeTypes.APPLICATION_M3U8;
     private String standbyMime = MimeTypes.APPLICATION_M3U8;
     private long previewTarget;
@@ -226,7 +228,7 @@ public final class PlayerActivity extends Activity {
     private static final int GESTURE_VERTICAL = 1;
     private static final int GESTURE_HORIZONTAL = 2;
     private static final int GESTURE_HOLD = 3;
-    private static final float[] SPEEDS = {0.5f, 0.75f, 1f, 1.25f, 2f, 3f};
+    private static final float[] SPEEDS = {0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f};
     private float manualSpeed = 1f;
     private boolean speedLocked;
     private boolean speedHoldActive;
@@ -1268,6 +1270,8 @@ public final class PlayerActivity extends Activity {
             message.setVisibility(View.GONE);
         }
         currentSource = null;
+        // 切集先清空 vid：新的播放地址到达前不拿上一集的 id 去回传进度
+        currentVid = "";
         activeFirstFrame = false;
         failedStandbyKey = null;
         currentId = id;
@@ -1326,6 +1330,7 @@ public final class PlayerActivity extends Activity {
                 runOnUiThread(() -> {
                     if (token != loadToken || destroyed || isFinishing()) return;
                     currentSource = ready.optString("source");
+                    currentVid = ready.optString("vid");
                     currentMime = ready.optString("mimeType", MimeTypes.APPLICATION_M3U8);
                     // 直连模式：把后端随播放地址下发的 Referer / 签名 Cookie 交给数据源
                     MediaRequestContext.set(ready, currentSource);
@@ -2079,6 +2084,11 @@ public final class PlayerActivity extends Activity {
             value.put("completed", completed || player.getPlaybackState() == Player.STATE_ENDED);
             store.recordProgress(value);
             lastSaved = System.currentTimeMillis();
+            // 同步一份到红果账号（未登录 / 没拿到 vid 时内部会直接跳过）
+            HongguoAccount.get(this).reportProgress(
+                    currentId, currentVid, currentEpisode,
+                    player.getCurrentPosition(), player.getDuration(),
+                    episodes == null ? 0 : episodes.length());
         } catch (Exception ignored) { }
     }
 

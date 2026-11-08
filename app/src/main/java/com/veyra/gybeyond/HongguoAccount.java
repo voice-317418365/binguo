@@ -63,6 +63,13 @@ final class HongguoAccount {
     /** 已登录凭据；懒加载，登出时清空。 */
     private AccountCredentials credentials;
 
+    /** 进度回传走单独一条线程，播放器主线程只丢任务不等待。 */
+    private final java.util.concurrent.ExecutorService reports =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static final long REPORT_INTERVAL_MS = 3 * 60 * 1000L;
+    private String lastReportKey = "";
+    private long lastReportAt;
+
     private HongguoAccount(Context context) {
         this.context = context;
         this.http = new OkHttpClient.Builder()
@@ -191,6 +198,34 @@ final class HongguoAccount {
         }
     }
 
+    /**
+     * 预约 / 追更列表。
+     *
+     * <p>{@code is_online} 只能二选一，所以拉两次合并：false 是还在追更中的，
+     * true 是已经上线（可以看了）。任一边失败不影响另一边，避免一个空分类把整页干掉。
+     */
+    JSONArray reservations() {
+        AccountCredentials stored = requireCredentials();
+        JSONArray rows = new JSONArray();
+        Exception last = null;
+        for (boolean online : new boolean[]{false, true}) {
+            try {
+                for (com.hongguotv.core.CloudReservation row : cloud.reservations(stored, online)) {
+                    JSONObject item = row.getSeries().toJson();
+                    item.put("online", row.getOnline());
+                    item.put("publishAt", row.getPublishAt());
+                    item.put("publishText", row.getPublishText());
+                    rows.put(item);
+                }
+            } catch (Exception error) {
+                last = error;
+                Log.w(TAG, "预约列表（online=" + online + "）拉取失败", error);
+            }
+        }
+        if (rows.length() == 0 && last != null) throw new IllegalStateException(readable(last), last);
+        return rows;
+    }
+
     /** 收藏/取消收藏某一部剧。 */
     void setFavorite(String seriesId, boolean add) {
         AccountCredentials stored = requireCredentials();
@@ -199,6 +234,45 @@ final class HongguoAccount {
         } catch (Exception error) {
             throw new IllegalStateException(readable(error), error);
         }
+    }
+
+    /**
+     * 把播放进度回传到红果账号，让红果 App 里也能看到这部剧、接着看。
+     *
+     * <p>几个刻意的保守设定：未登录直接跳过（不替游客写数据）；位置为 0 不报
+     * （还没开始看，报了会把红果那边的记录改成"未开始"）；同一集 3 分钟内只报一次，
+     * 换集立刻报。全部在后台线程执行，失败只记日志，不影响播放。
+     */
+    void reportProgress(String seriesId, String vid, int episode, long position,
+                        long duration, int episodeCount) {
+        if (seriesId == null || !seriesId.matches("[0-9]{1,30}")) return;
+        if (vid == null || !vid.matches("[0-9]{1,30}")) return;
+        if (position <= 0 || duration <= 0) return;
+        AccountCredentials stored = storedCredentials();
+        if (stored == null) return;
+        long now = System.currentTimeMillis();
+        String key = seriesId + ":" + episode;
+        synchronized (this) {
+            if (key.equals(lastReportKey) && now - lastReportAt < REPORT_INTERVAL_MS) return;
+            lastReportKey = key;
+            lastReportAt = now;
+        }
+        reports.execute(() -> {
+            try {
+                CloudProgress progress = new CloudProgress(
+                        new com.hongguotv.core.Series(seriesId, "", "", "", "", ""),
+                        vid,
+                        Math.max(0, episode - 1),
+                        position,
+                        duration,
+                        now,
+                        Math.max(0, episodeCount));
+                cloud.upload(stored, progress, Math.max(0, episodeCount));
+                Log.d(TAG, "进度已回传 " + seriesId + " 第" + episode + "集");
+            } catch (Exception error) {
+                Log.w(TAG, "进度回传失败（不影响播放）", error);
+            }
+        });
     }
 
     /** 本地缓存的昵称，用于"我的"页头像旁边直接显示，不发请求。 */
@@ -242,6 +316,49 @@ final class HongguoAccount {
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             resolver.update(uri, done, null, null);
         }
+    }
+
+    /**
+     * 导出原始接口响应，用于对齐字段名。
+     *
+     * <p>云端历史的字段在不同版本里换过名字，靠猜会得到"剧名对、进度全是 0、封面全空"
+     * 的结果。这里把两个接口的原始 JSON 打出来，方便在真实数据上确认。
+     */
+    String rawDump() throws Exception {
+        AccountCredentials stored = requireCredentials();
+        JSONObject out = new JSONObject();
+        JSONObject history;
+        try {
+            history = cloud.historyRaw(stored);
+        } catch (Exception error) {
+            throw new IllegalStateException(readable(error), error);
+        }
+        out.put("history", history);
+        // 从原始历史里尽量捞出 id，再拉一次详情，两个接口的字段一起看
+        try {
+            JSONObject payload = history.optJSONObject("data");
+            JSONArray rows = payload == null ? null : payload.optJSONArray("data_list");
+            if (rows == null && payload != null) rows = payload.optJSONArray("video_data");
+            if (rows == null) rows = history.optJSONArray("video_data");
+            if (rows != null && rows.length() > 0) {
+                StringBuilder ids = new StringBuilder();
+                int take = Math.min(rows.length(), 5);
+                for (int i = 0; i < take; i++) {
+                    JSONObject row = rows.optJSONObject(i);
+                    if (row == null) continue;
+                    String id = row.optString("book_id_str");
+                    if (id.isEmpty()) id = row.optString("series_id");
+                    if (id.isEmpty()) id = row.optString("book_id");
+                    if (id.isEmpty()) continue;
+                    if (ids.length() > 0) ids.append(',');
+                    ids.append(id);
+                }
+                if (ids.length() > 0) out.put("detail", cloud.detailRaw(stored, ids.toString()));
+            }
+        } catch (Exception error) {
+            out.put("detailError", String.valueOf(error.getMessage()));
+        }
+        return out.toString();
     }
 
     // ---------------------------------------------------------------- 内部
