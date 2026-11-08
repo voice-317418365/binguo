@@ -77,7 +77,7 @@ contentReady = Promise.all([api('content-status'), privateSiteReady]).then(([sta
   state.privateSite = site && site.id ? site : { id: 'huangguo', name: '黄果' };
   // 启动即拉取黄果网络通道（避免重启后 state.proxyMode 未初始化导致下载误判手机直连）
   try { api('get-proxy-mode').then(v => { state.proxyMode = Number(v) || 3; }).catch(() => {}); } catch (ignore) {}
-  document.title = 'Veyra';
+  document.title = '彬果';
   if (privateMode() && state.privateSite && state.privateSite.id && state.privateSite.id !== 'huangguo') {
     /* 接口型源没有黄果那套"成人/漫剧 + 分类"结构：
        一级仍是两个 tab，但内容换成「全部 / 最新」，具体题材走「全部类型」页（后端分类）。 */
@@ -195,8 +195,8 @@ function setAccount(profile) {
 }
 api('account').then(profile => {
   setAccount(profile);
-  if (!profile?.loggedIn) showAuth(); // 强制登录：未登录必须先登录/注册才能使用
-}).catch(() => showAuth());
+  // [PATCH no-login] 未登录也直接进入浏览
+}).catch(() => setAccount(null));
 api('server-base').then(serverBase => {
   const input = document.getElementById('auth-server');
   if (input && !input.value) input.value = String(serverBase || '').replace(/\/+$/, '');
@@ -248,7 +248,7 @@ function showTvLoginPanel() {
   if (form) form.hidden = true;
   if (footnote) footnote.hidden = true;
   document.getElementById('auth-title').textContent = '登录电视';
-  document.getElementById('auth-subtitle').textContent = '用手机上的 Veyra 扫一下，账号直接同步过来';
+  document.getElementById('auth-subtitle').textContent = '用手机上的彬果扫一下，账号直接同步过来';
   document.getElementById('tv-login').hidden = false;
   requestTvLoginQr();
 }
@@ -277,7 +277,7 @@ function requestTvLoginQr() {
     if (start) start.hidden = true;
     if (note) {
       // 这台设备可以是被电视扫、被另一台手机/平板扫，也可以被电脑扫 —— 文案别再写死「电视」
-      note.textContent = '用另一台已登录的 Veyra 扫这个码：电视 / 电脑 / 平板 / 手机都行（' + info.host + ':' + info.port + '）';
+      note.textContent = '用另一台已登录的彬果扫这个码：电视 / 电脑 / 平板 / 手机都行（' + info.host + ':' + info.port + '）';
       note.hidden = false;
     }
   } catch (error) {
@@ -340,7 +340,7 @@ function showAuth(mode = 'login') {
   if (scanBox) scanBox.hidden = !scan;
   document.getElementById('auth-title').textContent = scan ? '扫码登录' : mode === 'login' ? '登录应用账号' : '注册应用账号';
   const subtitle = document.getElementById('auth-subtitle');
-  if (subtitle) subtitle.textContent = scan ? '用另一台已登录的 Veyra 扫下面的码，账号直接同步过来' : '登录后同步收藏和观看历史';
+  if (subtitle) subtitle.textContent = scan ? '用另一台已登录的彬果扫下面的码，账号直接同步过来' : '登录后同步收藏和观看历史';
   setAuthPending(authPending, mode);
   document.getElementById('auth-password').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   const codeField = document.getElementById('auth-code');
@@ -1678,7 +1678,7 @@ function renderSettings() {
     <section><button type="button" class="settings-link" data-account-management="1"><span><strong>账号管理</strong><small>${state.account.loggedIn ? esc(state.account.username) : '登录或注册账号'}</small></span>${icon('arrow')}</button></section>
     ${privateMode() ? `<section><button type="button" class="settings-link" data-source-open><span><strong>私密内容源</strong><small data-source-summary>${esc((state.privateSite && state.privateSite.name) || '黄果')}</small></span>${icon('arrow')}</button></section>` : ''}
     <section><button type="button" class="settings-link" data-proxy-open><span><strong>黄果网络通道</strong><small data-proxy-summary>${esc(proxySummaryText())}</small></span>${icon('arrow')}</button></section>
-    <section><button type="button" class="settings-link" data-about-open><span><strong>关于 Veyra</strong><small>项目地址 · GPL-3.0 开源</small></span>${icon('arrow')}</button></section></div>`;
+    <section><button type="button" class="settings-link" data-about-open><span><strong>关于彬果</strong><small>项目地址 · GPL-3.0 开源</small></span>${icon('arrow')}</button></section></div>`;
   if (window.bindAppearance) window.bindAppearance();
   api('hot-update-status').then(window.hgHotUpdateStatus).catch(() => {});
   loadRemoteServers(true).catch(() => {});   // 设置页摘要要显示「已配置几台」
@@ -1824,7 +1824,7 @@ function closeAccountPop() {
 }
 window.__veyraAccountBack = () => { if (accountPop && !accountPop.hidden) { closeAccountPop(); return true; } return false; };
 window.__veyraAccountOpen = () => !!(accountPop && !accountPop.hidden);
-// v0.18.109：黄果网络通道/关于 Veyra 弹窗化（同账号管理弹窗，复用外观 scrim/pop 结构）
+// v0.18.109：黄果网络通道/关于彬果 弹窗化（同账号管理弹窗，复用外观 scrim/pop 结构）
 function proxySummaryText() {
   const m = PROXY_MODE_NAMES[state.proxyMode] || '走后端转发';
   return state.proxy ? `${m} · ${state.proxy}` : m;
@@ -1967,9 +1967,9 @@ window.__veyraProxyOpen = () => !!(proxyPop && !proxyPop.hidden);
 var aboutPop = null;
 function buildAboutPopHtml() {
   return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true" aria-labelledby="about-title">
-    <div class="appearance-head"><h2 id="about-title">关于 Veyra</h2><button type="button" class="appearance-close" data-about-close aria-label="关闭">✕</button></div>
+    <div class="appearance-head"><h2 id="about-title">关于彬果</h2><button type="button" class="appearance-close" data-about-close aria-label="关闭">✕</button></div>
     <p class="appearance-note">项目地址：<button type="button" class="settings-url" data-open-url="https://github.com/gybeyond1/Veyra">github.com/gybeyond1/Veyra</button> <button type="button" data-check-update>检查更新</button></p>
-    <p class="appearance-note">Veyra 基于开源项目二次开发，遵循 GPL-3.0 开源协议发布，完整源码、自建后端与 Docker 部署说明见仓库。</p>
+    <p class="appearance-note">彬果基于开源项目二次开发，遵循 GPL-3.0 开源协议发布，完整源码、自建后端与 Docker 部署说明见仓库。</p>
   </div>`;
 }
 function ensureAboutPop() {
@@ -4325,7 +4325,7 @@ function refreshCurrentDownloads() {
       state.library = await api('library');
       if (accountPop && !accountPop.hidden) closeAccountPop();
       setRoute('settings'); renderSettings();
-      showAuth(); // 退出登录后锁住：未登录状态强制回到全屏登录页
+      // [PATCH no-login] 退出登录后不再锁回登录页
       toast('已退出登录');
     }
     catch (error) { toast(error.message, true); }
