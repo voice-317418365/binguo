@@ -1,7 +1,7 @@
 // 账号接口验证脚本：cookie 从环境变量读，不落盘
 // 用法：
-//   Windows:  $env:HG_COOKIE="sessionid=xxx; sessionid_ss=xxx"; node tmp-verify.js
-//   Linux:    HG_COOKIE="..." node tmp-verify.js
+//   Windows:  $env:HG_COOKIE="sessionid=xxx; sessionid_ss=xxx"; node account-check.js
+//   Linux:    HG_COOKIE="..." node account-check.js
 const hg = require('./hongguo-app.js');
 
 const COOKIE = process.env.HG_COOKIE || '';
