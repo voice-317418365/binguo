@@ -64,7 +64,9 @@ def sign_payload(payload_bytes: bytes, private_key: Path) -> bytes:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--private-key", required=True)
-    ap.add_argument("--owner", required=True, help="GitHub 用户名，用于拼接 zip 下载 URL")
+    ap.add_argument("--owner", required=False, default="gybeyond1", help="GitHub 用户名，用于拼接 zip 下载 URL")
+    ap.add_argument("--base-url", required=False, default="",
+                    help="自建热更源：zip 所在目录的基址，如 http://101.201.32.104/hot-update")
     ap.add_argument("--revision", required=True, type=int)
     ap.add_argument("--version", required=True)
     ap.add_argument("--min-version-code", required=True, type=int)
@@ -85,8 +87,11 @@ def main() -> None:
         raise SystemExit("包大小必须 0 < size <= 12MB")
     sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
 
-    url = (f"https://github.com/{args.owner}/HuangguoAPP-HotUpdates/releases/download/"
-           f"resources-r{args.revision}/resources-r{args.revision}.zip")
+    if args.base_url:
+        url = f"{args.base_url.rstrip('/')}/resources-r{args.revision}.zip"
+    else:
+        url = (f"https://github.com/{args.owner}/HuangguoAPP-HotUpdates/releases/download/"
+               f"resources-r{args.revision}/resources-r{args.revision}.zip")
     payload = {
         "bridgeVersion": 1,
         "contentModeVersion": 1,

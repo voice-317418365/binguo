@@ -20,7 +20,7 @@ import java.util.zip.ZipInputStream;
 
 /** Downloading never mutates a live session. Activation and recovery share one atomic state file. */
 final class HotUpdateManager {
-    static final String INDEX = "https://github.com/gybeyond1/HuangguoAPP-HotUpdates/releases/latest/download/hot-update.json";
+    static final String INDEX = "http://101.201.32.104/hot-update/hot-update.json";
     static final String UI_URL = "https://appassets.androidplatform.net/assets/app.html";
     static final int BRIDGE_VERSION = 1;
     private static final long BUNDLED_UI_REVISION = 999;
@@ -317,7 +317,8 @@ final class HotUpdateManager {
     private static byte[] download(String address, int maximum) throws Exception {
         for (int redirect = 0; redirect < 6; redirect++) {
             URL url = new URL(address);
-            if (!"https".equals(url.getProtocol())) throw new SecurityException("资源更新必须使用 HTTPS");
+            String protocol = url.getProtocol();
+            if (!"https".equals(protocol) && !"http".equals(protocol)) throw new SecurityException("资源更新协议不支持");
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(15_000); connection.setReadTimeout(30_000);
             connection.setInstanceFollowRedirects(false);

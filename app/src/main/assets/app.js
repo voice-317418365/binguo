@@ -1508,10 +1508,8 @@ function renderDownloadSheet() {
     }
     sheet.innerHTML = `<div class="download-pick">
       <button type="button" class="download-pick-option" data-dl-pick="phone"><strong>下载到手机</strong></button>
-      <button type="button" class="download-pick-option" data-dl-pick="nas" ${isAdmin ? '' : 'disabled'}><strong>下载到 NAS</strong>${isAdmin ? '' : '<small>仅管理员可用</small>'}</button>
       <button type="button" class="download-pick-option" data-dl-pick="desktop"><strong>下载到电脑</strong></button>
       <button type="button" class="download-pick-option" data-dl-pick="device"><strong>下载到其他设备</strong></button>
-      <button type="button" class="download-pick-option" data-dl-pick="remote"><strong>下载到远程服务器</strong></button>
       ${canDebug ? '<button type="button" class="download-pick-option" data-dl-pick="phone-debug"><strong>下载到手机（调试）</strong><small>保留 TS 与 Key，不自动合并，导出调试包</small></button>' : ''}
     </div>`;
     return;
@@ -1680,7 +1678,6 @@ function renderSettings() {
     <section><button type="button" class="settings-link" data-account-management="1"><span><strong>账号管理</strong><small>${state.account.loggedIn ? esc(state.account.username) : '登录或注册账号'}</small></span>${icon('arrow')}</button></section>
     ${privateMode() ? `<section><button type="button" class="settings-link" data-source-open><span><strong>私密内容源</strong><small data-source-summary>${esc((state.privateSite && state.privateSite.name) || '黄果')}</small></span>${icon('arrow')}</button></section>` : ''}
     <section><button type="button" class="settings-link" data-proxy-open><span><strong>黄果网络通道</strong><small data-proxy-summary>${esc(proxySummaryText())}</small></span>${icon('arrow')}</button></section>
-    <section><button type="button" class="settings-link" data-remote-open><span><strong>远程服务器</strong><small data-remote-summary>${esc(remoteSummaryText())}</small></span>${icon('arrow')}</button></section>
     <section><button type="button" class="settings-link" data-about-open><span><strong>关于 Veyra</strong><small>项目地址 · GPL-3.0 开源</small></span>${icon('arrow')}</button></section></div>`;
   if (window.bindAppearance) window.bindAppearance();
   api('hot-update-status').then(window.hgHotUpdateStatus).catch(() => {});
