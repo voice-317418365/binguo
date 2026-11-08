@@ -67,12 +67,56 @@ for old, new in REPLACEMENTS:
         js = js.replace(old, new)
         hits += 1
 report.append("文案替换: %d / %d" % (hits, len(REPLACEMENTS)))
+
+# ---------- 3. 隐藏设置页的账号管理入口 ----------
+pattern_acct = re.compile(
+    r'\n[ \t]*<section><button type="button" class="settings-link"'
+    r' data-account-management="1">[^\n]*</section>'
+)
+js, n = pattern_acct.subn("", js, count=1)
+if n:
+    report.append("账号管理入口: 已隐藏")
+else:
+    report.append("账号管理入口: 未找到（可能已隐藏）")
+
+# ---------- 4. 关于弹窗：去掉项目地址，只留检查更新 ----------
+pattern_about = re.compile(
+    r'<p class="appearance-note">项目地址：.*?</button></p>\s*\n\s*'
+    r'<p class="appearance-note">[^<]*GPL-3\.0[^<]*</p>',
+    re.S,
+)
+js, n = pattern_about.subn(
+    '<p class="appearance-note"><button type="button" data-check-update>检查更新</button></p>',
+    js,
+    count=1,
+)
+if n:
+    report.append("关于弹窗: 项目地址已隐藏")
+else:
+    report.append("关于弹窗: 未找到项目地址段（可能已处理）")
+
+# ---------- 4b. 设置页「关于」入口右侧摘要 ----------
+if "<small>项目地址 · GPL-3.0 开源</small>" in js:
+    js = js.replace("<small>项目地址 · GPL-3.0 开源</small>", "<small>版本与更新</small>")
+    report.append("设置页关于摘要: 已改为 版本与更新")
+
 write(JS, js)
 
 html = read(HTML)
 if "<title>Veyra</title>" in html:
     write(HTML, html.replace("<title>Veyra</title>", "<title>彬果</title>"))
     report.append("app.html 标题: 1 处")
+
+# ---------- 5. 外观默认关闭玻璃材质 ----------
+APPEARANCE = "app/src/main/assets/appearance.js"
+ap = read(APPEARANCE)
+if "glass: 'on'," in ap:
+    write(APPEARANCE, ap.replace("glass: 'on',", "glass: 'off',", 1))
+    report.append("玻璃材质默认: on -> off")
+elif "glass: 'off'," in ap:
+    report.append("玻璃材质默认: 已是 off")
+else:
+    report.append("玻璃材质默认: 未找到 (指官方改了 DEFAULT 结构)")
 
 for line in report:
     print(line)

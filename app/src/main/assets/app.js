@@ -1675,10 +1675,9 @@ async function submitDownloadTo(target, remoteId) {
 function renderSettings() {
   content.innerHTML = `<div class="settings-page"><button type="button" class="listing-back" data-back="1">${icon('back')} 返回我的</button><h1>设置</h1>
     ${window.renderAppearance ? window.renderAppearance() : ''}
-    <section><button type="button" class="settings-link" data-account-management="1"><span><strong>账号管理</strong><small>${state.account.loggedIn ? esc(state.account.username) : '登录或注册账号'}</small></span>${icon('arrow')}</button></section>
     ${privateMode() ? `<section><button type="button" class="settings-link" data-source-open><span><strong>私密内容源</strong><small data-source-summary>${esc((state.privateSite && state.privateSite.name) || '黄果')}</small></span>${icon('arrow')}</button></section>` : ''}
     <section><button type="button" class="settings-link" data-proxy-open><span><strong>黄果网络通道</strong><small data-proxy-summary>${esc(proxySummaryText())}</small></span>${icon('arrow')}</button></section>
-    <section><button type="button" class="settings-link" data-about-open><span><strong>关于彬果</strong><small>项目地址 · GPL-3.0 开源</small></span>${icon('arrow')}</button></section></div>`;
+    <section><button type="button" class="settings-link" data-about-open><span><strong>关于彬果</strong><small>版本与更新</small></span>${icon('arrow')}</button></section></div>`;
   if (window.bindAppearance) window.bindAppearance();
   api('hot-update-status').then(window.hgHotUpdateStatus).catch(() => {});
   loadRemoteServers(true).catch(() => {});   // 设置页摘要要显示「已配置几台」
@@ -1968,8 +1967,7 @@ var aboutPop = null;
 function buildAboutPopHtml() {
   return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <div class="appearance-head"><h2 id="about-title">关于彬果</h2><button type="button" class="appearance-close" data-about-close aria-label="关闭">✕</button></div>
-    <p class="appearance-note">项目地址：<button type="button" class="settings-url" data-open-url="https://github.com/gybeyond1/Veyra">github.com/gybeyond1/Veyra</button> <button type="button" data-check-update>检查更新</button></p>
-    <p class="appearance-note">彬果基于开源项目二次开发，遵循 GPL-3.0 开源协议发布，完整源码、自建后端与 Docker 部署说明见仓库。</p>
+    <p class="appearance-note"><button type="button" data-check-update>检查更新</button></p>
   </div>`;
 }
 function ensureAboutPop() {

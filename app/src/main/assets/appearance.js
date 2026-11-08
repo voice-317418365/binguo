@@ -17,7 +17,7 @@
   var KEY = 'veyra.appearance.v2';
   var LEGACY_KEY = 'veyra.appearance.v1';
   var DEFAULT = {
-    glass: 'on',
+    glass: 'off',
     btnMat: 'liquid',
     bg: 'color',
     specular: 138,
