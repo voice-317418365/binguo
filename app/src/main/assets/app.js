@@ -1965,7 +1965,7 @@ var aboutPop = null;
 function buildAboutPopHtml() {
   return `<div class="appearance-pop account-pop" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <div class="appearance-head"><h2 id="about-title">关于彬果</h2><button type="button" class="appearance-close" data-about-close aria-label="关闭">✕</button></div>
-    <p class="appearance-note"><button type="button" data-check-update>检查更新</button></p>
+    <p class="appearance-note">项目地址：<button type="button" class="settings-url" data-open-url="https://github.com/voice-317418365/binguo">github.com/voice-317418365/binguo</button> <button type="button" data-check-update>检查更新</button></p>
   </div>`;
 }
 function ensureAboutPop() {

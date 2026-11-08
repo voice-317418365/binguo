@@ -79,21 +79,30 @@ if n:
 else:
     report.append("账号管理入口: 未找到（可能已隐藏）")
 
-# ---------- 4. 关于弹窗：去掉项目地址，只留检查更新 ----------
+# ---------- 4. 关于弹窗：归一成「项目地址(自己的) + 检查更新」 ----------
+PLAIN = '<p class="appearance-note"><button type="button" data-check-update>检查更新</button></p>'
+PROJECT_URL = "https://github.com/voice-317418365/binguo"
+PROJECT_TEXT = "github.com/voice-317418365/binguo"
+WITH_URL = (
+    '<p class="appearance-note">项目地址：'
+    '<button type="button" class="settings-url" data-open-url="' + PROJECT_URL + '">' + PROJECT_TEXT + '</button> '
+    '<button type="button" data-check-update>检查更新</button></p>'
+)
+# 上游原始是「项目地址 + GPL 说明」两段，先压成一行纯按钮（rebase 后会回到两段形态）
 pattern_about = re.compile(
     r'<p class="appearance-note">项目地址：.*?</button></p>\s*\n\s*'
     r'<p class="appearance-note">[^<]*GPL-3\.0[^<]*</p>',
     re.S,
 )
-js, n = pattern_about.subn(
-    '<p class="appearance-note"><button type="button" data-check-update>检查更新</button></p>',
-    js,
-    count=1,
-)
-if n:
-    report.append("关于弹窗: 项目地址已隐藏")
+js, n = pattern_about.subn(PLAIN, js, count=1)
+# 再把纯按钮换成带自己仓库地址的版本
+if PLAIN in js:
+    js = js.replace(PLAIN, WITH_URL, 1)
+    report.append("关于弹窗: 项目地址 -> " + PROJECT_TEXT)
+elif WITH_URL in js:
+    report.append("关于弹窗: 已含自己的项目地址")
 else:
-    report.append("关于弹窗: 未找到项目地址段（可能已处理）")
+    report.append("关于弹窗: 未找到锚点（官方可能改了结构）")
 
 # ---------- 4b. 设置页「关于」入口右侧摘要 ----------
 if "<small>项目地址 · GPL-3.0 开源</small>" in js:
