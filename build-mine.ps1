@@ -7,7 +7,8 @@
 param(
     [switch]$Tv,
     [string]$VersionName,
-    [int]$VersionCode = 0
+    [int]$VersionCode = 0,
+    [switch]$Publish
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,11 +61,12 @@ Write-Output "包名: $($meta.applicationId)"
 & "E:\Android\Sdk\build-tools\37.0.0\apksigner.bat" verify --print-certs $apk 2>&1 |
     Select-String "certificate DN" | Select-Object -First 1
 
-# 复制到 dist，文件名符合服务端更新模块的正则 Veyra(-TV)?-\d+\.\d+\.\d+\.apk
+# 复制到 dist，文件名 Binguo-<版本>.apk
+# 注意：服务端更新模块只认 Veyra-*.apk，上传到 /data/app-update/mobile/ 时要改回 Veyra 前缀
 $dist = "E:\code\Veyra\dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 $suffix = if ($Tv) { "-TV" } else { "" }
-$final  = Join-Path $dist "Veyra$suffix-$($el.versionName).apk"
+$final  = Join-Path $dist "Binguo$suffix-$($el.versionName).apk"
 Copy-Item $apk $final -Force
 
 $size = [math]::Round((Get-Item $final).Length / 1MB, 1)
@@ -73,3 +75,13 @@ Write-Output ""
 Write-Output "产物:   $final"
 Write-Output "大小:   $size MB"
 Write-Output "SHA256: $sha"
+
+# 自建更新通道要求文件名是 Veyra(-TV)?-x.y.z.apk，这里额外出一份副本，
+# 上传到 /data/app-update/mobile/ 时直接用这个，别手动改名改错
+if ($Publish) {
+    $pubPath = Join-Path $dist "Veyra$suffix-$($el.versionName).apk"
+    Copy-Item $final $pubPath -Force
+    Write-Output ""
+    Write-Output "更新通道副本: $pubPath"
+    Write-Output "  上传: docker cp `"$pubPath`" veyra:/data/app-update/$(if($Tv){'tv'}else{'mobile'})/"
+}
