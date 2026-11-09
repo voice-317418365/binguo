@@ -58,6 +58,13 @@ const tagGroups = [
   ['popular', '热门类型'], ['story', '故事题材'], ['setting', '场景与身份'],
   ['relationship', '人物与关系'], ['style', '外形风格'], ['plot', '情节元素'], ['other', '更多标签']
 ];
+/* 「全部类型」页顶部的三个排序类别。数据取自红果官方总热播榜：
+   热度、收藏数是榜单公布的真实数值；上架时间用作品 ID（字节雪花 ID 随时间递增）排序。 */
+const RANK_BOARDS = [
+  ['latest', '最新上架', '按上架时间从新到旧'],
+  ['hot', '最高热度', '官方综合热度榜'],
+  ['collect', '最多收藏', '按官方收藏数排序']
+];
 const state = {
   route: 'home', tab: 'home', sub: { adult: 0, ai: 0 }, home: null, binge: false,
   category: null, categoryItems: [], detail: null, detailLoading: false, sourceItem: null,
@@ -571,7 +578,7 @@ function itemCard(item) {
   const id = esc(item.id);
   const title = esc(item.title || '影片');
   /* 榜单条目带的是热度（9009万热度），比「打开详情」有用；普通列表还是集数/标签 */
-  const info = esc(item.heat || item.episodeLabel || asArray(item.tags).slice(0, 2).join(' · ') || '打开详情');
+  const info = esc(item.infoOverride || item.heat || item.episodeLabel || asArray(item.tags).slice(0, 2).join(' · ') || '打开详情');
   /* 榜单里用名次（#1~#3 描金），普通列表还是评分 */
   const rank = Number(item.rank) || 0;
   const scoreText = rank ? `#${rank}` : (item.score || '');
@@ -965,6 +972,8 @@ async function resumeFromHome(id) {
   if (!item || String(item.id) !== id) return;
   const source = contentSource;
   const episode = Math.max(1, Number(item.episode) || 1) + (item.completed ? 1 : 0);
+  // 点下去就预热，和 goDetail 的请求并行，别串着等
+  api('prewarm', { id, episode }).catch(() => {});
   const token = routeToken + 1;
   await goDetail(id);
   if (routeToken !== token || contentSource !== source || state.route !== 'detail' || state.detailLoading || String(state.detail?.id) !== id) return;
@@ -992,6 +1001,8 @@ function renderHome() {
 function renderTags() {
   const tags = asArray(state.tags?.items);
   const sections = privateMode() ? tagGroups : [['short', '短剧类型'], ['comic', '漫剧类型']];
+  const boards = `<section class="tags-group tags-group-board"><h2>榜单速览</h2><div class="tags-grid tags-grid-board">${RANK_BOARDS.map(([kind, name, note]) =>
+    `<button type="button" class="tag-choice rank-choice" data-rank-kind="${kind}" data-rank-name="${esc(name)}"><strong>《${esc(name)}》</strong><small>${esc(note)}</small></button>`).join('')}</div></section>`;
   const groups = sections.map(([id, title]) => {
     const members = tags.filter(tag => tag.group === id);
     if (!members.length) return '';
@@ -1002,7 +1013,7 @@ function renderTags() {
     }).join('')}</div></section>`;
   }).join('');
   content.innerHTML = `<div class="tags-page"><div class="tags-heading"><button type="button" data-back="1" aria-label="返回上一页">${icon('back')}</button><h1>全部类型</h1><span>${tags.length} 个${privateMode() ? '标签' : '大类'}</span></div>
-    <p class="tags-intro">${privateMode() ? '点选标签，发现相关作品' : '按短剧、漫剧大类，发现相关作品'}</p>${groups}</div>`;
+    <p class="tags-intro">${privateMode() ? '点选标签，发现相关作品' : '按短剧、漫剧大类，发现相关作品'}</p>${boards}${groups}</div>`;
 }
 
 function refreshMissingImages(items) {
@@ -1548,15 +1559,13 @@ function downloadTaskRow(task, kind) {
   // 远程传输（手机下载 → SMB/WebDAV/FTP）：一部剧只有一条最新记录，直接挂在下载行上显示
   const remoteJob = kind === 'phone' ? remoteJobs.get(String(task.id)) : null;
   const remoteText = remoteJobText(remoteJob);
-  const remoteBusy = !!(remoteJob && (remoteJob.status === 'running' || remoteJob.status === 'queued'));
-  const canTransfer = kind === 'phone' && !running && !remoteBusy
-    && (task.status === 'done' || task.status === 'ready' || task.status === 'failed');
-  const transferBtn = canTransfer
-    ? `<button type="button" class="dl-cancel dl-transfer" data-dl-transfer="${esc(task.id)}">${remoteJob && remoteJob.status === 'failed' ? '重传' : '传到服务器'}</button>` : '';
+  // 「传到服务器」入口已下线：只在任务进行中保留取消传输与状态显示
   const transferCancel = remoteJob && (remoteJob.status === 'running' || remoteJob.status === 'queued')
     ? `<button type="button" class="dl-cancel" data-dl-transfer-cancel="${esc(remoteJob.id)}">取消传输</button>` : '';
   // 直写导出后 output 是 file:// 路径（不再走 MediaStore 的 content://），两者都按「已保存」展示
-  const output = task.output && (task.output.startsWith('content://') || task.output.startsWith('file://')) ? '已保存到系统下载目录' : task.output || '';
+  const output = task.output && (task.output.startsWith('content://') || task.output.startsWith('file://'))
+    ? ((task.detail || '').includes('已合并') ? '已保存合并后的完整视频' : '已保存到系统下载目录')
+    : task.output || '';
   const cancelBtn = running ? `<button type="button" class="dl-cancel" data-dl-cancel="${kind}" data-dl-id="${esc(task.id)}">取消</button>` : '';
   const retryBtn = !running && kind === 'phone' && (task.status === 'failed' || task.status === 'canceled') && !(task.error || '').includes('合并失败')
     ? `<button type="button" class="dl-cancel dl-retry" data-dl-retry="phone" data-dl-id="${esc(task.id)}">重试</button>` : '';
@@ -1567,9 +1576,12 @@ function downloadTaskRow(task, kind) {
   const canRetryFailed = task.status === 'ready' || (task.status === 'failed' && !(task.error || '').includes('合并失败'));
   const retryFailedBtn = !running && kind === 'nas' && canRetryFailed && failedList.length > 0
     ? `<button type="button" class="dl-cancel dl-retry" data-dl-retry-failed="nas" data-dl-id="${esc(task.id)}">重试失败${failedList.length}集</button>` : '';
-  // 手动合并：下载完成（ready，含部分失败）或合并失败（分集保留）时显示合并按钮，等用户点合并才合并
+  // 手动合并：下载完成（ready，含部分失败）或合并失败（分集保留）时显示，等用户点才合并
   const mergeBtn = !running && !remoteKind && (task.status === 'ready' || ((task.status === 'failed' || task.status === 'done') && (task.error || '').includes('合并失败')))
-    ? `<button type="button" class="dl-cancel dl-retry" data-dl-merge="${kind}" data-dl-id="${esc(task.id)}">合并</button>` : '';
+    ? `<button type="button" class="dl-cancel dl-merge" data-dl-merge="${kind}" data-dl-id="${esc(task.id)}" title="把已下载的 ${Number(task.doneCount) || 0} 集合并成 1 个 mp4，保存到系统下载目录；不合并也能逐集播放">合并成 1 个视频</button>` : '';
+  // 说清「合并」的输入、产出和不合并会怎样，避免用户不知道这个按钮在做什么
+  const mergeHint = mergeBtn
+    ? `<div class="dl-merge-hint">已下好 ${Number(task.doneCount) || 0} 集，每集是一个单独文件；合并后只留 1 个完整 mp4，方便一次看完或拷走。不合并也能逐集播放。</div>` : '';
   const deleteBtn = !running && !remoteKind ? `<button type="button" class="dl-cancel" data-dl-delete="${kind}" data-dl-id="${esc(task.id)}"${task.children && task.children.length > 1 ? ` data-dl-siblings="${esc(task.children.map(c => c.id).join(','))}"` : ''}>删除</button>` : '';
   const failedInfo = failedList.length > 0
     ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc('失败集: ' + failedList.map(f => '第' + f.index + '集(' + (f.error || '') + ')').join('；'))}" title="点击复制失败明细">失败 ${failedList.length} 集：${esc(failedList.slice(0, 3).map(f => '第' + f.index + '集').join('、'))}${failedList.length > 3 ? ' 等' : ''}</span>` : '';
@@ -1586,7 +1598,8 @@ function downloadTaskRow(task, kind) {
     <div class="download-task-head"><strong>${esc(task.title || '未知剧集')}</strong>${sourceBadge}<span class="dl-status ${running ? 'is-running' : ''}">${statusText}</span></div>
     <div class="download-task-meta">${task.doneCount}/${task.totalCount} 集 · ${task.doneCount === task.totalCount && task.status !== 'running' ? '已下载全部集' : (failedList.length ? `失败 ${failedList.length} 集` : '')}${srcNote ? ` · <b class="dl-src-note">${esc(srcNote)}</b>` : ''}${detailHint}${remoteText ? ` · <span class="dl-remote-note ${remoteJob.status}">${esc(remoteText)}</span>` : ''}</div>
     <div class="download-track"><i style="width:${Math.max(0, Math.min(100, Number(task.percent) || 0))}%"></i></div>
-    <div class="download-task-foot">${output ? `<span class="dl-output">${esc(output)}</span>` : ''}${failedInfo}${errBlock}${transferBtn}${transferCancel}${mergeBtn}${retryFailedBtn}${retryBtn}${cancelBtn}${deleteBtn}</div>
+    ${mergeHint}
+    <div class="download-task-foot">${output ? `<span class="dl-output">${esc(output)}</span>` : ''}${failedInfo}${errBlock}${transferCancel}${mergeBtn}${retryFailedBtn}${retryBtn}${cancelBtn}${deleteBtn}</div>
   </div></div>`;
 }
 
@@ -1610,8 +1623,8 @@ function downloadStatusText(task, kind) {
   }
   if (task.status === 'ready') return failedCount > 0 ? `已下载 · 失败${failedCount}集` : '已下载 · 待合并';
   if (task.status === 'done') {
-    if (kind === 'nas') return '已下载 · 已合并';
-    if ((task.detail || '').includes('已合并')) return '已下载 · 已合并';
+    if (kind === 'nas') return '已合并 · 1 个视频';
+    if ((task.detail || '').includes('已合并')) return '已合并 · 1 个视频';
     return '已下载';
   }
   if (task.status === 'failed') return failedCount > 0 ? `失败 · 可重试${failedCount}集` : '失败';
@@ -1628,9 +1641,52 @@ function downloadStatusText(task, kind) {
 }
 
 // ---- 下载弹层：详情页"下载" → 选集（全选/取消全选）→ 点"下载" → 选手机/NAS → 提交 ----
+// 不限制集数：每集都要单独取流解析，集数越多「准备」越久，用实时进度告诉用户还在正常跑。
+const DOWNLOAD_RESOLVE_CONCURRENCY = 3;   // 串行太慢、全量并发会把原生取流队列压垮
+const DOWNLOAD_RESOLVE_TIMEOUT_MS = 15000;
 let downloadMode = null;          // 'episodes' | 'target' | 'parsing'
 const downloadSelection = new Set();
 let downloadParsing = false;
+let downloadCancelled = false;
+let downloadJobId = 0;   // 每次提交一个令牌，防止「取消旧批 → 立刻重开」时旧解析结果误提交
+let downloadProgress = { total: 0, done: 0, stage: '' };
+
+// 有限并发地跑一批任务，返回顺序与入参一致（任一失败即整体失败）
+async function mapWithDownloadLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) {
+    runners.push((async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    })());
+  }
+  await Promise.all(runners);
+  return results;
+}
+
+// 解析阶段只做局部 DOM 更新，避免整块重绘导致进度条闪烁、取消按钮被重建
+function updateDownloadParsing() {
+  const p = downloadProgress;
+  const total = Math.max(p.total || 0, 1);
+  const pct = Math.min(100, Math.round(p.done / total * 100));
+  const fill = document.getElementById('dl-progress-fill');
+  if (fill) fill.style.width = pct + '%';
+  const stage = document.getElementById('dl-parsing-stage');
+  if (stage) stage.textContent = p.stage || '正在获取播放地址';
+  const count = document.getElementById('dl-parsing-count');
+  if (count) count.textContent = `已完成 ${p.done}/${p.total} 集 · 剩余 ${Math.max(p.total - p.done, 0)} 集`;
+}
+
+function cancelDownloadParsing() {
+  downloadCancelled = true;
+  hideDownloadSheet();
+  toast('已取消，本次没有开始下载');
+}
 
 function showDownloadSheet() {
   if (!state.detail) return;
@@ -1639,6 +1695,7 @@ function showDownloadSheet() {
   downloadMode = 'episodes';
   downloadSelection.clear();
   downloadParsing = false;
+  downloadCancelled = false;
   downloadOverlay.hidden = false;
   updateBackEnabled();
   // 先强制拉服务端最新角色（管理员/NAS 下载鉴权），再渲染弹层
@@ -1649,6 +1706,8 @@ function showDownloadSheet() {
 }
 
 function hideDownloadSheet() {
+  // 准备阶段关掉弹层（返回键 / 点遮罩 / 取消按钮）都视为取消，后台不许再提交下载
+  if (downloadMode === 'parsing') downloadCancelled = true;
   downloadOverlay.hidden = true;
   downloadParsing = false;
   updateBackEnabled();
@@ -1663,7 +1722,15 @@ function renderDownloadSheet() {
   if (!sheet) return;
   const episodes = asArray(state.detail.episodes);
   if (downloadMode === 'parsing') {
-    sheet.innerHTML = `<p class="download-parsing">正在解析播放地址…<br><small>需要逐集解析，请稍候</small></p>`;
+    sheet.innerHTML = `<div class="download-parsing">
+      <div class="dl-parsing-title">正在准备下载</div>
+      <div class="dl-parsing-stage" id="dl-parsing-stage">正在获取播放地址</div>
+      <div class="dl-progress"><div class="dl-progress-fill" id="dl-progress-fill"></div></div>
+      <div class="dl-parsing-count" id="dl-parsing-count"></div>
+      <p class="dl-parsing-note">每集都要单独获取播放地址，集数越多准备得越久；全部准备好后会统一开始下载。请保持页面打开，进度正常推进就说明下载在正常准备中。</p>
+      <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-cancel-parse="1">取消</button></div>
+    </div>`;
+    updateDownloadParsing();
     return;
   }
   if (downloadMode === 'target') {
@@ -1722,50 +1789,52 @@ function renderDownloadSheet() {
   const all = episodes.map(ep => Number(ep.number) || 0);
   const checked = all.filter(n => downloadSelection.has(n)).length;
   const allSelected = all.length && checked === all.length;
-  sheet.innerHTML = `<div class="download-sheet-toolbar"><button type="button" class="dl-secondary" data-dl-all="1">${allSelected ? '取消全选' : '全选'}</button><span>已选 ${checked}/${all.length} 集</span></div>
+  const toggleLabel = allSelected ? '清空' : '全选';
+  sheet.innerHTML = `<div class="download-sheet-toolbar"><button type="button" class="dl-secondary" data-dl-all="1">${toggleLabel}</button><span class="dl-counter">已选 ${checked}/${all.length} 集</span></div>
     <div class="download-sheet-grid">${episodes.map(ep => {
       const n = Number(ep.number) || 0;
-      return `<label class="dl-ep ${downloadSelection.has(n) ? 'checked' : ''}" data-dl-ep="${n}"><span>${n}</span></label>`;
+      const on = downloadSelection.has(n);
+      return `<label class="dl-ep ${on ? 'checked' : ''}" data-dl-ep="${n}"><span>${n}</span></label>`;
     }).join('')}</div>
-    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">取消</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? '' : 'disabled'}>下载 ${checked ? checked + ' 集' : ''}</button></div>`;
+    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">取消</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? '' : 'disabled'}>下载 ${checked ? checked + ' 集' : ''}</button></div>
+    <p class="dl-batch-note">不限集数，选多少下多少；集数越多准备播放地址越久，准备过程会显示实时进度。</p>`;
 }
 
-async function resolveEpisodesForDownload(episodes) {
-  const resolved = [];
+async function resolveEpisodesForDownload(episodes, onProgress) {
   const detailEpisodes = asArray(state.detail.episodes);
-  const hgJobs = [];
+  // 源模式在整批里只判一次，避免解析到一半模式变化导致前后行为不一致
+  const privateNow = privateMode();
+  const direct = new Map();
+  const pending = [];
+  const failed = [];
+  const total = episodes.length;
+  let done = 0;
+  const bump = () => { done++; if (onProgress) onProgress(done, total); };
   for (const n of episodes) {
-    if (privateMode()) {
-      // 黄果源：选集列表的 url 只是剧集页面地址，不能直接用；分集是 m3u8 流，
-      // 由 APK 本地拉 m3u8/分片（走后端代理同播放链路）并用本地 ffmpeg 封装 mp4，不依赖后端转码
-      hgJobs.push({ n, p: api('episode', { id: state.detail.id, episode: n }) });
-      continue;
-    }
+    // 公开源选集里已带直链就直接用；黄果源给的是剧集页面地址，分集必须逐集取流
     const meta = detailEpisodes.find(ep => Number(ep.number) === n);
-    if (meta && meta.url) { resolved.push({ index: n, url: meta.url, key: '' }); continue; }
-    let data;
+    if (!privateNow && meta && meta.url) { direct.set(n, { index: n, url: meta.url, key: '' }); bump(); }
+    else pending.push(n);
+  }
+  // 有限并发 + 单集超时：个别集取不到只跳过这一集并汇总告知，不让整批白等
+  const fetched = await mapWithDownloadLimit(pending, DOWNLOAD_RESOLVE_CONCURRENCY, async n => {
+    let item = null;
     try {
-      data = await api('episode', { id: state.detail.id, episode: n });
+      const data = await withTimeout(api('episode', { id: state.detail.id, episode: n }), DOWNLOAD_RESOLVE_TIMEOUT_MS);
+      const source = String(data && data.source || '');
+      if (!/^https?:\/\//i.test(source)) throw new Error('播放地址为空或无效');
+      item = { index: n, url: source, key: privateNow ? '' : (data.key || '') };
     } catch (error) {
-      throw new Error(`第 ${n} 集播放地址解析失败：${error.message || '未知错误'}`);
+      failed.push(n);
+      console.warn(`[dl] 第 ${n} 集跳过：${error.message || '取流失败'}`);
     }
-    const source = String(data && data.source || '');
-    if (!/^https?:\/\//i.test(source)) {
-      throw new Error(`第 ${n} 集没有拿到有效的播放地址（${source.slice(0, 40) || '为空'}），请稍后重试`);
-    }
-    resolved.push({ index: n, url: source, key: data.key || '' });
-  }
-  for (const j of hgJobs) {
-    let data;
-    try { data = await j.p; } catch (error) { throw new Error(`第 ${j.n} 集播放地址解析失败：${error.message || '未知错误'}`); }
-    const source = String(data && data.source || '');
-    if (!/^https?:\/\//i.test(source)) throw new Error(`第 ${j.n} 集没有拿到有效的播放地址（${source.slice(0, 40) || '为空'}），请稍后重试`);
-    resolved.push({ index: j.n, url: source, key: '' });
-  }
-  if (!resolved.length) throw new Error('没有可下载的分集');
-  const bad = resolved.find(r => !/^https?:\/\//i.test(String(r.url || '')));
-  if (bad) throw new Error(`第 ${bad.index} 集播放地址无效，已取消提交`);
-  return resolved;
+    bump();
+    return item;
+  });
+  const fetchedMap = new Map(fetched.filter(Boolean).map(item => [item.index, item]));
+  const resolved = episodes.map(n => direct.get(n) || fetchedMap.get(n)).filter(Boolean);
+  if (!resolved.length) throw new Error('所有分集都没能取到播放地址，请检查网络后重试');
+  return { items: resolved, failed };
 }
 
 async function submitDownloadTo(target, remoteId) {
@@ -1779,9 +1848,22 @@ async function submitDownloadTo(target, remoteId) {
   if (target === 'remote' && !remoteId) { toast('请选择要传到哪台服务器', true); return; }
   const episodes = asArray(state.detail.episodes).map(ep => Number(ep.number) || 0).filter(n => downloadSelection.has(n));
   if (!episodes.length) { toast('请先选择集数', true); return; }
+  const job = ++downloadJobId;
+  downloadCancelled = false;
   downloadParsing = true;
-  downloadMode = 'parsing';
-  renderDownloadSheet();
+  // NAS / 设备分发只推集数、由对端自行取流，不需要在这里逐集解析，也就不用弹准备进度
+  const needsResolve = target !== 'nas' && target !== 'device';
+  if (needsResolve) {
+    downloadMode = 'parsing';
+    downloadProgress = { total: episodes.length, done: 0, stage: '正在获取播放地址' };
+    renderDownloadSheet();
+  }
+  const noteProgress = (done, total) => {
+    if (job !== downloadJobId || downloadCancelled) return;
+    downloadProgress.done = done;
+    downloadProgress.stage = done < total ? '正在获取播放地址' : '播放地址已备齐，正在开始下载…';
+    if (downloadMode === 'parsing') updateDownloadParsing();
+  };
   try {
     if (target === 'device') {
       const sourceNow = String(state.detail.source || contentSource) === 'huangguo' ? 'huangguo' : 'hongguo';
@@ -1795,13 +1877,13 @@ async function submitDownloadTo(target, remoteId) {
         deviceId: String(remoteId || '')
       });
       hideDownloadSheet();
-      toast('已推送到设备，马上开始下载');
+      toast(`已推送 ${episodes.length} 集到设备，马上开始下载`);
       return;
     }
     if (target === 'nas') {
       // NAS 自主解析：只推 seriesId/title/集数，由后端调红果 App 接口取流（最高画质档）
       await api('nas-download-start', { source: contentSource, title: state.detail.title, seriesId: String(state.detail.seriesId || state.detail.id), episodes, cover: state.detail.cover || '' });
-      toast('已提交 NAS 下载任务（后端自行解析取流）');
+      toast(`已提交 ${episodes.length} 集到 NAS，可在「我的下载」查看进度`);
     } else {
       // 下载到手机 / 下载到远程服务器。
       // 判定依据优先级：① 当前详情页实际内容源（detail.source，与详情/播放完全一致，杜绝全局模式脱节）；
@@ -1819,26 +1901,33 @@ async function submitDownloadTo(target, remoteId) {
       try { const pmv = await api('get-proxy-mode'); if (pmv !== null && pmv !== undefined && pmv !== '') proxyModeNow = Number(pmv) || 3; } catch (ignore) {}
       console.log(`[dl-judge] source=${sourceNow} proxyMode=${proxyModeNow} role=${state.account?.role} remote=${remoteId || '-'}`);
       {
-        const resolved = await resolveEpisodesForDownload(episodes);
-        if (!resolved.length) throw new Error('没有可下载的分集');
+        const { items: resolved, failed } = await resolveEpisodesForDownload(episodes, noteProgress);
+        if (downloadCancelled || job !== downloadJobId) {
+          if (job === downloadJobId) hideDownloadSheet();  // 别把已经开始的新一批弹层关掉
+          return;
+        }
         // 调试模式：仍是「下载到手机」，但要求原生保留 TS/KEY、不自动合并，最后打成一个调试包
         const debug = target === 'phone-debug';
         // 远程服务器：先照常下到手机（同一条链路），下载+合并完成后原生自动上传到所选服务器
         const targetRemote = target === 'remote' ? String(remoteId || '') : '';
+        const skipNote = failed.length
+          ? `；另有 ${failed.length} 集未取到地址已跳过（第 ${failed.slice(0, 5).join('、')}${failed.length > 5 ? ' 等' : ''} 集），可稍后单独重试`
+          : '';
         await api('download-start', { source: sourceNow, title: state.detail.title, episodes: resolved, debug, cover: state.detail.cover || '', remoteId: targetRemote });
         toast(debug
-          ? `调试模式已开始（${resolved.length} 集）：分片下完后会导出「第NN集_调试包.zip」到 Download/Veyra/${state.detail.title}`
+          ? `调试模式已开始（${resolved.length} 集），分片下完会导出调试包${skipNote}`
           : targetRemote
-            ? `已开始下载 ${resolved.length} 集`
-            : `判定[源=${sourceNow} 通道=${proxyModeNow}] 已开始下载到手机（手机经代理拉源合并）`);
+            ? `已开始下载 ${resolved.length} 集，完成后会自动上传到服务器${skipNote}`
+            : `已开始下载 ${resolved.length} 集，可在「我的下载」查看进度${skipNote}`);
       }
     }
     hideDownloadSheet();
   } catch (error) {
     downloadParsing = false;
+    if (downloadCancelled || job !== downloadJobId) return;   // 主动取消 / 已被新批次取代：不弹错、不动弹层
     downloadMode = 'target';
     renderDownloadSheet();
-    toast(`${target === 'nas' ? '提交失败' : '下载失败'}：${error.message}`, true);
+    toast(`${target === 'nas' ? '提交失败' : '下载失败'}：${error.message}，可返回重试`, true);
   }
 }
 
@@ -2807,11 +2896,15 @@ function renderListing() {
   if (!listing?.items.length && listing?.refreshing) { renderSkeleton(); return; }
   const tagName = String(listing.label || listing.slug).replace(/^#+/, '');
   const tagTitle = privateMode() ? `#${tagName}` : `${listing.slug?.startsWith('comic:') ? '漫剧' : '短剧'} · ${tagName}`;
-  const title = listing.kind === 'tag-list' ? tagTitle : listing.kind === 'recommend' ? '精选推荐' : privateMode() ? '最近上新' : '热门漫剧';
-  const backLabel = listing.kind === 'tag-list' && state.listingReturn?.route === 'tags' ? '返回全部类型' : '返回首页';
+  const rankNote = listing.kind === 'rank-board'
+    ? ({ latest: '按上架时间从新到旧', hot: '红果官方综合热度榜', collect: '按红果官方公布的收藏数排序' }[listing.rankKind] || '')
+    : '';
+  const title = listing.kind === 'rank-board' ? `《${tagName}》`
+    : listing.kind === 'tag-list' ? tagTitle : listing.kind === 'recommend' ? '精选推荐' : privateMode() ? '最近上新' : '热门漫剧';
+  const backLabel = (listing.kind === 'tag-list' || listing.kind === 'rank-board') && state.listingReturn?.route === 'tags' ? '返回全部类型' : '返回首页';
   content.innerHTML = `<div class="listing-page"><button class="listing-back" type="button" data-back="1">${icon('back')} ${backLabel}</button>
-    <h1>${esc(title)}</h1><p>已显示 ${listing.items.length} 部作品</p>
-    ${listing.items.length ? `<div class="search-grid listing-grid">${listing.items.map(itemCard).join('')}</div>` : '<div class="empty-state">这个标签下暂无作品</div>'}
+    <h1>${esc(title)}</h1><p>已显示 ${listing.items.length} 部作品${rankNote ? ` · ${esc(rankNote)}` : ''}</p>
+    ${listing.items.length ? `<div class="search-grid listing-grid">${listing.items.map(itemCard).join('')}</div>` : `<div class="empty-state">${listing.kind === 'rank-board' ? '榜单暂时无法加载' : '这个标签下暂无作品'}</div>`}
     <div class="listing-footer">${listingFooter()}</div></div>`;
   hydrateImages();
   observeListingEnd();
@@ -2981,7 +3074,7 @@ function backDestination() {
   if (state.route === 'downloads') return state.settingsReturn?.route || 'settings';
   if (state.route === 'settings') return state.settingsReturn?.route || 'library';
   if (state.route === 'tags') return state.tagsReturn?.route || 'home';
-  if (state.route === 'listing' && state.listing?.kind === 'tag-list') return state.listingReturn?.route || 'home';
+  if (state.route === 'listing' && (state.listing?.kind === 'tag-list' || state.listing?.kind === 'rank-board')) return state.listingReturn?.route || 'home';
   return state.route === 'home' ? null : 'home';
 }
 
@@ -3214,6 +3307,39 @@ async function goTag(slug, label) {
     if (token !== routeToken) return;
     if (!state.listing.items.length) renderError(error, 'tag-list');
     else { state.listing.refreshing = false; updateListingFooter(); toast('列表更新失败，已显示缓存内容', true); }
+  }
+}
+
+/* 三个排序类别：一次拿到官方榜单前 3 页并排好序，列表页直接复用现有卡片布局。 */
+async function goRankBoard(kind, label) {
+  const token = ++routeToken;
+  if (state.route !== 'listing') state.listingReturn = captureScreen();
+  listingObserver?.disconnect();
+  setRoute('listing'); state.tab = 'home'; setNav('home');
+  searchInput.value = `#${label}`;
+  state.listing = {
+    items: [], nextPage: null, kind: 'rank-board', rankKind: kind, label,
+    refreshing: true, loading: false, error: false
+  };
+  renderListing();
+  try {
+    const fresh = await api('rank-sorted', { kind });
+    if (token !== routeToken) return;
+    const items = asArray(fresh.items).map(item => ({
+      ...item,
+      // 卡片副标题直接体现这个类别的排序依据
+      infoOverride: kind === 'collect' ? (item.collectText || `${item.collect || 0}万收藏`)
+        : (item.heat || '官方综合热度')
+    }));
+    state.listing = {
+      ...fresh, items, kind: 'rank-board', rankKind: kind, label,
+      refreshing: false, loading: false, error: false
+    };
+    renderListing();
+  } catch (error) {
+    if (token !== routeToken) return;
+    state.listing.refreshing = false;
+    renderError(error, 'rank-board');
   }
 }
 
@@ -3543,7 +3669,7 @@ window.hgBack = () => {
   if (state.route === 'account-management') { restoreScreen(state.accountReturn); return true; }
   if (state.route === 'settings') { restoreScreen(state.settingsReturn); return true; }
   if (state.route === 'detail') { if (detailCard) detailCard.close(); else returnFromDetail(); return true; }
-  if (state.route === 'listing' && state.listing?.kind === 'tag-list') { restoreScreen(state.listingReturn); return true; }
+  if (state.route === 'listing' && (state.listing?.kind === 'tag-list' || state.listing?.kind === 'rank-board')) { restoreScreen(state.listingReturn); return true; }
   if (state.route === 'tags') { restoreScreen(state.tagsReturn); return true; }
   if (state.route === 'listing') { goHome(); return true; }
   if (state.route === 'search') { searchInput.value = ''; goHome(); return true; }
@@ -4584,13 +4710,6 @@ document.addEventListener('click', async event => {
     return;
   }
   if (event.target.closest('[data-remote-pick-close]')) { closeRemotePicker(); return; }
-  if (event.target.closest('[data-dl-transfer]')) {
-    const button = event.target.closest('[data-dl-transfer]');
-    const head = button.closest('.download-task');
-    const title = head ? (head.querySelector('.download-task-head strong') || {}).textContent : '';
-    openRemotePicker(button.dataset.dlTransfer, title);
-    return;
-  }
   if (event.target.closest('[data-dl-transfer-cancel]')) {
     const id = event.target.closest('[data-dl-transfer-cancel]').dataset.dlTransferCancel;
     api('remote-transfer-cancel', { id }).then(() => { toast('已取消传输'); refreshCurrentDownloads(); }).catch(error => toast(error.message, true));
@@ -4673,6 +4792,7 @@ document.addEventListener('click', async event => {
     return;
   }
   if (event.target.closest('[data-dl-back-target]')) { downloadMode = 'target'; renderDownloadSheet(); return; }
+  if (event.target.closest('[data-dl-cancel-parse]')) { cancelDownloadParsing(); return; }
   if (event.target.closest('[data-dl-back]')) { hideDownloadSheet(); return; }
   if (event.target.closest('[data-dl-confirm]')) { downloadMode = 'target'; renderDownloadSheet(); return; }
   if (event.target.closest('[data-dl-all]')) {
@@ -4685,7 +4805,8 @@ document.addEventListener('click', async event => {
   }
   if (event.target.closest('[data-dl-ep]')) {
     const n = Number(event.target.closest('[data-dl-ep]').dataset.dlEp);
-    if (downloadSelection.has(n)) downloadSelection.delete(n); else downloadSelection.add(n);
+    if (downloadSelection.has(n)) downloadSelection.delete(n);
+    else downloadSelection.add(n);
     renderDownloadSheet();
     return;
   }
@@ -4735,7 +4856,7 @@ document.addEventListener('click', async event => {
     const button = event.target.closest('[data-dl-merge]');
     const kind = button.dataset.dlMerge, id = button.dataset.dlId;
     const action = kind === 'nas' ? 'nas-download-merge' : 'download-merge';
-    api(action, { id }).then(() => { toast('已开始合并'); refreshCurrentDownloads(); }).catch(error => toast(error.message, true));
+    api(action, { id }).then(() => { toast('正在把分集合并成 1 个完整视频…'); refreshCurrentDownloads(); }).catch(error => toast(error.message, true));
     return;
   }
   if (event.target.closest('[data-dl-retry-failed]')) {
@@ -4822,13 +4943,20 @@ function refreshCurrentDownloads() {
   const historyCard = event.target.closest('[data-history-id]');
   if (historyCard) {
     const id = historyCard.dataset.historyId;
+    const episode = Number(historyCard.dataset.historyEpisode || 1);
     if (historyCard.dataset.historyCompleted === 'true') goDetail(id, historyCard);
-    else goDetail(id).then(() => openPlayer(Number(historyCard.dataset.historyEpisode || 1)));
+    else {
+      // 列表点「继续看」时先让原生端把取流跑起来，别等详情页这一圈网络走完才开始
+      api('prewarm', { id, episode }).catch(() => {});
+      goDetail(id).then(() => openPlayer(episode));
+    }
     return;
   }
   if (event.target.closest('[data-all-tags]')) { goTags(); return; }
   const tagChoice = event.target.closest('[data-tag-slug]');
   if (tagChoice) { goTag(tagChoice.dataset.tagSlug, tagChoice.dataset.tagName); return; }
+  const rankChoice = event.target.closest('[data-rank-kind]');
+  if (rankChoice) { goRankBoard(rankChoice.dataset.rankKind, rankChoice.dataset.rankName); return; }
   const sub = event.target.closest('[data-sub]');
   if (sub) { goCategory(state.tab, Number(sub.dataset.sub), !!sub.closest('#compact-category')); return; }
   const card = event.target.closest('[data-open-id]');
@@ -4864,6 +4992,7 @@ function refreshCurrentDownloads() {
     else if (retry.dataset.retry === 'listing') openListing(state.listing.kind);
     else if (retry.dataset.retry === 'tags') goTags();
     else if (retry.dataset.retry === 'tag-list') goTag(state.listing.slug, state.listing.label);
+    else if (retry.dataset.retry === 'rank-board') goRankBoard(state.listing.rankKind, state.listing.label);
     else if (retry.dataset.retry === 'detail') goDetail(state.sourceItem.id);
     return;
   }

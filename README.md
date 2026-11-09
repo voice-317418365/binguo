@@ -1,5 +1,7 @@
 # 彬果
 
+> 当前版本 **0.28.1432**（versionCode 41432）· 变更记录见 [CHANGELOG.md](CHANGELOG.md)
+
 基于 [Veyra](https://github.com/gybeyond1/Veyra) 二次开发的 Android 短剧客户端。
 
 免登录、无广告、启动即看。内容直连源站，不走中转服务器。
@@ -11,11 +13,14 @@
 | 登录 | 强制登录才能使用 | **免登录**，直接进首页；登录变成可选 |
 | 应用名 | Veyra / Veyra TV | 彬果 / 彬果 TV |
 | 图标 | 原版图标 | 苹果 + 播放键 + 字标 |
-| 远程服务器 | 支持 SMB / WebDAV / FTP 传输 | 入口已移除 |
+| 远程服务器 | 支持 SMB / WebDAV / FTP 传输 | 下载卡片上的「传到服务器」按钮已移除（设置页配置与「下载到远程服务器」入口保留） |
 | NAS 下载合并 | 支持 | 入口已移除 |
 | 私密内容源 | 黄果 / 剧果 / 野果 / 禁果 | 入口已隐藏（红果源保留） |
 | 账号管理 | 设置页有入口 | 入口已隐藏（右上角头像仍可用） |
 | **红果账号** | 无 | **扫码登录，同步官方观看历史 / 收藏 / 预约，播放进度回传** |
+| **官方弹幕** | 无 | **只读接入红果官方弹幕**：匿名、不发送、可开关与调样式 |
+| **榜单类别** | 官方榜单 | 新增《最新上架》《最高热度》《最多收藏》三个类别 |
+| **播放性能** | 起播缓冲 2.5s | 合入上游 0.28.15~0.28.18：起播门槛 0.3s、详情页预热、播放器跨页复用 |
 | **播放器倍速** | 0.5 / 0.75 / 1 / 1.25 / 2 / 3 | **新增 1.5×** |
 | 外观默认 | 玻璃材质开 | **默认关闭** |
 | 热更新 | 官方 GitHub 通道 | **自建静态源**，自签 ECDSA 密钥 |
@@ -40,13 +45,14 @@
 ## 功能
 
 - 沉浸式刷剧、自动连播、倍速（含 **1.5×**）、清晰度切换
-- 搜索、分类、排行榜、追更提醒
+- 搜索、分类、排行榜、追更提醒；「全部类型」里另有《最新上架》《最高热度》《最多收藏》
 - 收藏、观看历史、进度记忆
+- **红果官方弹幕（只读）**：匿名读取、按 30 秒窗口对齐、可开关与调整样式，不发送弹幕
 - **红果账号扫码登录**：同步官方观看历史 / 收藏 / 预约，播放时把进度回传
-- 下载到本机，离线观看
+- 批量下载到本机：不限制集数，实时进度与取消、单集取流失败自动跳过；下载完成后可「合并成 1 个视频」把分集拼成单个 mp4
 - 手机 / 平板 / 电视同一套代码（`mobile` / `tv` flavor）
 - 外观自定义：配色、圆角、按钮材质、动效
-- 设置 → 关于：版本号、自建更新检查、清除缓存（显示当前占用）
+- 设置 → 关于：版本号、自建更新检查、清除缓存（显示当前占用）、项目地址、赞助
 
 ## 红果账号同步
 
@@ -142,7 +148,7 @@ https://p6-novel.byteimg.com/{thumb_uri}~tplv-shrink:640:0.image
 | Python | 3.8+（构建脚本用） |
 | Kotlin 编译器 | 2.2.10（`KOTLIN_HOME` 指向） |
 
-不需要 NDK —— `jniLibs/` 里是预编译好的 `.so`。
+不需要 NDK —— 预编译好的 `.so` 放在 `app/src/mobile/jniLibs/arm64-v8a/`，只打进手机版；电视包是纯 Java 包，任何 ABI 都能装。
 
 ### 环境变量
 
@@ -179,7 +185,7 @@ Windows 上可以直接用：
 ```powershell
 .\build-mine.ps1                          # 编手机版
 .\build-mine.ps1 -Tv                      # 编电视版
-.\build-mine.ps1 -VersionName 0.28.1430 -VersionCode 41430 -Publish
+.\build-mine.ps1 -VersionName 0.28.1432 -VersionCode 41432 -Publish
 ```
 
 `-Publish` 会额外生成一份 `Veyra-<版本>.apk` 命名的副本（某些更新分发逻辑依赖这个前缀）。
@@ -201,10 +207,10 @@ private static final String STATIC_BASE   = "http://your-server/update/";
 
 ```json
 {
-  "version": "0.28.1430",
-  "apk": "Binguo-0.28.1430.apk",
+  "version": "0.28.1432",
+  "apk": "Binguo-0.28.1432.apk",
   "sha256": "……64位小写十六进制……",
-  "size": 13416244,
+  "size": 13606146,
   "notes": "更新说明"
 }
 ```
@@ -235,8 +241,8 @@ private static final String RELEASE_BASE = "https://github.com/voice-317418365/b
 
 发 Release 时：
 
-- tag 用 `v<版本>` 格式（如 `v0.28.1430`）
-- asset 文件名要和静态源一致（`Binguo-0.28.1430.apk`），下载时文件名是从 URL 末段推出来的
+- tag 用 `v<版本>` 格式（如 `v0.28.1432`）
+- asset 文件名要和静态源一致（`Binguo-0.28.1432.apk`），下载时文件名是从 URL 末段推出来的
 - 仓库还没发过 Release 时 API 返回 404，客户端直接当作"已是最新"，不报错
 
 ### 2. 前端热更新（只换 assets）
@@ -263,7 +269,7 @@ python scripts/sign-hot-update.py \
   --base-url http://your-server/hot-update \
   --revision 1001 \
   --version 2026.11.08.1 \
-  --min-version-code 41430 \
+  --min-version-code 41432 \
   --site app/src/main/assets/site-default.json \
   --theme hot/theme.json \
   --ui-dir hot/ui \
@@ -282,7 +288,7 @@ python scripts/sign-hot-update.py \
 app/                     Android 客户端
   src/main/java/         业务逻辑（播放、下载、账号、设备联动）
   src/main/assets/       WebView 前端（app.* 手机 / tv.* 电视）
-  src/main/cpp/          合并引擎 C 源码（so 已预编译进 jniLibs）
+  src/mobile/jniLibs/    合并引擎预编译 so（仅手机版打包）
   src/main/res/          图标与资源
 server/                  后端（Node.js，本仓库默认不启用）
   hongguo-signer/        签名器（Go）
@@ -292,6 +298,15 @@ scripts/
   sign-hot-update.py     热更包签发
 docs/                    部署与改造文档
 ```
+
+## 更新日志
+
+完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。当前版本 **0.28.1432**：
+
+- 新增红果官方弹幕（只读）、《最新上架》《最高热度》《最多收藏》三个榜单类别
+- 批量下载去掉集数上限，改为实时进度 / 可取消 / 单集失败跳过；下载卡片去掉「传到服务器」按钮，「合并」改为「合并成 1 个视频」并补上用途说明
+- 合入上游 0.28.15~0.28.18 播放性能批次：起播门槛 0.3s、详情页预热、播放器跨 Activity 复用
+- 电视端补齐 0.28.1431 的检查更新修复：不再后台静默下载，只亮红点、手动才弹窗
 
 ## 说明
 

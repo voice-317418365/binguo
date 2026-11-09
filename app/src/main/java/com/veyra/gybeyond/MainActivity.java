@@ -1606,6 +1606,7 @@ public final class MainActivity extends Activity {
                 store.saveCache("category:" + id + ":" + page, result);
                 return result;
             }
+            case "rank-sorted": return repository.sortedBoard(args.optString("kind"));
             case "tags": {
                 JSONObject result = repository.tags();
                 store.saveCache("tags", result);
@@ -1638,9 +1639,18 @@ public final class MainActivity extends Activity {
                 // 黄果剧被误判红果源而走了手机直连（防盗链失败）。
                 result.put("source", ContentMode.get(this).active());
                 store.saveCache("detail:" + id, result);
+                /* 用户从详情页出现到点下播放通常有好几秒，这段时间足够把播放地址解析好、
+                   把首片拉进内存。以前是「点下去才开始取流」，所以每次都要等一个来回。 */
+                int resume = 1;
+                JSONObject progress = store.latestProgress(id);
+                if (progress != null) resume = Math.max(1, progress.optInt("episode", 1));
+                repository.prewarmEpisode(id, resume);
+                if (resume != 1) repository.prewarmEpisode(id, 1);
                 return result;
             }
             case "episode": return repository.episode(args.optString("id"), args.optInt("episode", 1));
+            // 点下去先预热：列表/历史里点「继续看」时，详情页都还没打开就得先等一次网络
+            case "prewarm": repository.prewarmEpisode(args.optString("id"), args.optInt("episode", 1)); return true;
             case "cover": return repository.coverData(args.optString("url"));
             case "library": return store.library();
             case "bookmark": {
@@ -1670,6 +1680,11 @@ public final class MainActivity extends Activity {
             case "quit": runOnUiThread(this::finish); return true;
             case "open-player": {
                 args.put("source", mode.active());
+                /* 点下去的这一瞬间就把这一集的取流跑起来，跟 Activity 冷启动并行。
+                   详情页没预热到（比如从历史记录直接点播）时，这一步仍能省掉一大截等待。 */
+                JSONObject playing = args.optJSONObject("item");
+                String playingId = playing == null ? "" : playing.optString("id");
+                if (!playingId.isEmpty()) repository.prewarmEpisode(playingId, Math.max(1, args.optInt("episode", 1)));
                 Intent intent = new Intent(this, PlayerActivity.class);
                 intent.putExtra("payload", args.toString());
                 runOnUiThread(() -> startActivity(intent));

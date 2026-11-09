@@ -25,6 +25,13 @@ internal object RankBoards {
 
     private val ID = Regex("[0-9]{1,30}")
     private val PAGE = Regex("[?&]page=([0-9]{1,3})")
+    /** 「165.5万收藏」「1.2亿点赞」→ 统一成「万」的数值，供排序比较。 */
+    private val METRIC = Regex("([0-9]+(?:\\.[0-9]+)?)\\s*(万|亿)?")
+    private fun metric(text: String): Double {
+        val match = METRIC.find(text) ?: return 0.0
+        val value = match.groupValues[1].toDoubleOrNull() ?: return 0.0
+        return if (match.groupValues[2] == "亿") value * 10000 else value
+    }
 
     fun parse(html: String, path: String, page: Int): CatalogPage {
         if (html.length > 4 * 1024 * 1024) throw IOException("榜单页面过大")
@@ -50,7 +57,13 @@ internal object RankBoards {
             if (title.isEmpty() || title.length > 200) return null
             val rank = article.selectFirst("[class*=badge-number-]")?.text()?.trim()?.toIntOrNull()?.takeIf { it > 0 }
             val heat = article.selectFirst("p[class*=metrics-]")?.text()?.trim().orEmpty()
-            if (!positions.containsKey(id)) positions[id] = RankPosition(rank, heat)
+            // 互动数据：「评分9.5 / 165.5万收藏 / 418.4万点赞」，收藏数用来做「最多收藏」排序
+            var collectText = ""
+            for (li in article.select("ul[aria-label=作品互动数据] > li")) {
+                val text = li.text().trim()
+                if (text.contains("收藏")) { collectText = text; break }
+            }
+            if (!positions.containsKey(id)) positions[id] = RankPosition(rank, heat, metric(collectText), collectText)
             items.add(
                 Series(
                     id, title, cleanUrl(article.selectFirst("img[src]")?.attr("src").orEmpty()), "",

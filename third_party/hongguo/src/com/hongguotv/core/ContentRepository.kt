@@ -18,7 +18,8 @@ data class Series(val id: String, val title: String, val cover: String = "", val
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),o.str("title"),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
 }
 data class Detail(val series: Series, val episodes: List<String>)
-data class RankPosition(val rank: Int?, val heat: String)
+/** collect 统一换算成「万」用于排序；collectText 保留站点原文的「165.5万收藏」用于展示。 */
+data class RankPosition(val rank: Int?, val heat: String, val collect: Double = 0.0, val collectText: String = "")
 data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages: Int, val updatedText: String)
 data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null)
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)

@@ -319,9 +319,29 @@ object HongguoSigner {
         return null
     }
 
+    // ---------- 设备号缓存 ----------
+    /*
+     * 设备注册是一次额外的 HTTPS 往返（几百毫秒到一秒），原来每次点开一集都重注册一遍。
+     * 首次注册落盘，之后直接复用；取流连续失败才换新设备并覆盖缓存。
+     * 弹幕用的是内存里的 danmakuDevice，与这里互不干扰。
+     */
+    private fun loadDevice(): Pair<String, String>? = try {
+        val prefs = AppContext.get().getSharedPreferences("hongguo-device", android.content.Context.MODE_PRIVATE)
+        val did = prefs.getString("device_id", "").orEmpty()
+        val iid = prefs.getString("install_id", "").orEmpty()
+        if (did.matches(Regex("\\d{1,32}")) && iid.matches(Regex("\\d{1,32}")) && did != "0" && iid != "0") did to iid else null
+    } catch (_: Throwable) { null }
+
+    private fun saveDevice(device: Pair<String, String>) {
+        try {
+            AppContext.get().getSharedPreferences("hongguo-device", android.content.Context.MODE_PRIVATE)
+                .edit().putString("device_id", device.first).putString("install_id", device.second).apply()
+        } catch (_: Throwable) { }
+    }
+
     // ---------- 主流程：签名取流（空响应冷却重试 + 换设备 ≤3 轮） ----------
     fun resolve(vid: String): StreamInfo {
-        var device = registerDevice() ?: (newDeviceId() to newDeviceId())
+        var device = loadDevice() ?: registerDevice()?.also { saveDevice(it) } ?: (newDeviceId() to newDeviceId())
         var lastErr: Exception? = null
         var attempts = 0
         var rotations = 0
@@ -334,7 +354,7 @@ object HongguoSigner {
                 android.util.Log.w("HongguoSigner", "取流失败 attempt=$attempts: ${e.message}")
                 attempts++
                 if (attempts >= 2 && rotations < 2) {
-                    device = registerDevice() ?: (newDeviceId() to newDeviceId())
+                    device = registerDevice()?.also { saveDevice(it) } ?: (newDeviceId() to newDeviceId())
                     rotations++
                     attempts = 0
                     Thread.sleep(1200)
@@ -401,5 +421,32 @@ object HongguoSigner {
             android.util.Log.i("HongguoSigner", "取流成功 ${bestMeta?.optString("definition", "")} ${bestMeta?.optLong("vwidth", 0)}x${bestMeta?.optLong("vheight", 0)} key=${key?.hex() ?: "无"}")
             return StreamInfo(mainUrl, key, qNum)
         }
+    }
+
+    // ---------- 弹幕只读请求：复用同一套签名链 ----------
+    /** 交给 Java 层用 HttpURLConnection 原样发出，避免 OkHttp 规范化 query 里的转义。 */
+    data class SignedPost(val url: String, val userAgent: String, val headers: Map<String, String>)
+
+    /** 弹幕是匿名只读，不必为它走一次 device_register 网络往返；每进程一份随机设备身份即可。 */
+    @Volatile private var danmakuDevice: Pair<String, String> = newDeviceId() to newDeviceId()
+
+    /** 某个窗口命中稀疏采样时换一份设备身份重取（不影响取流链路）。 */
+    @Synchronized fun rotateDanmakuDevice() {
+        danmakuDevice = newDeviceId() to newDeviceId()
+    }
+
+    /**
+     * 给红果官方弹幕接口签名。签名算的是 rawQuery + body，最终 URL 必须逐字节一致，
+     * 所以这里连 URL 一起返回，调用方不要再拼 query、也不要重新编码。
+     */
+    fun signDanmakuRequest(path: String, body: ByteArray): SignedPost {
+        val now = System.currentTimeMillis()
+        val device = danmakuDevice
+        val rawQuery = buildQuery(device.first, device.second, now)
+        return SignedPost(
+            "$BASE$path?$rawQuery",
+            UA,
+            signPlayerRequest(rawQuery, body, now / 1000, device.first),
+        )
     }
 }

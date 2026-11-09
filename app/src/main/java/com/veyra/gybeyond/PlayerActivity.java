@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.animation.ValueAnimator;
 import android.os.Build;
 import android.content.pm.ActivityInfo;
+import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -30,6 +31,7 @@ import android.view.animation.PathInterpolator;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.GridLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -52,10 +54,12 @@ import androidx.media3.ui.AspectRatioFrameLayout;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Future;
 import android.view.TextureView;
@@ -202,6 +206,11 @@ public final class PlayerActivity extends Activity {
     /** 当前这一集的视频 id，进度回传到红果账号时要用。 */
     private String currentVid = "";
     private String currentMime = MimeTypes.APPLICATION_M3U8;
+    /** 当前这一集的取流信息（含 headers / vid），寄存播放器时一起带着走。 */
+    private JSONObject lastMedia;
+    /** 当前播放器挂的监听器，交还播放器前要摘掉，否则旧 Activity 会被一直引用。 */
+    private Player.Listener engineListener;
+    private Player.Listener standbyListener;
     private String standbyMime = MimeTypes.APPLICATION_M3U8;
     private long previewTarget;
     private long previewBucket = -1;
@@ -230,6 +239,24 @@ public final class PlayerActivity extends Activity {
     private static final int GESTURE_HOLD = 3;
     private static final float[] SPEEDS = {0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f};
     private float manualSpeed = 1f;
+
+    /* ---- 红果官方弹幕（只读）：数据层 + 原生渲染层，独立线程池，挂了绝不影响播放 ---- */
+    private DanmakuView danmakuView;
+    /** 两颗弹幕按钮的容器：整组跟随控件条显隐，控件条收起后不再常驻画面上方。 */
+    private LinearLayout danmakuControls;
+    private TextView danmakuButton;
+    private TextView danmakuSettingsButton;
+    private final ExecutorService danmakuWorker = Executors.newSingleThreadExecutor();
+    /** 窗口起点 → 该窗口的弹幕；换集 / seek 时整体清空。 */
+    private final Map<Long, List<HongguoDanmaku.Item>> danmakuWindows = new HashMap<>();
+    private final Set<Long> danmakuPending = new HashSet<>();
+    private SharedPreferences danmakuPrefs;
+    private String currentSourceMode = "hongguo";
+    private String danmakuVid = "";
+    private long danmakuWindow = -1;
+    private int danmakuToken;
+    private boolean danmakuEnabled;
+    private boolean danmakuShown;
     private boolean speedLocked;
     private boolean speedHoldActive;
     private boolean holdToggled;
@@ -294,6 +321,8 @@ public final class PlayerActivity extends Activity {
                 }
                 if (System.currentTimeMillis() - lastSaved > 5000) saveProgress(false);
                 maybePrepareNext();
+                // 弹幕整体包一层：哪怕渲染/调度出任何岔子，进度循环也不能断
+                try { updateDanmaku(position, duration); } catch (Exception ignored) { }
             }
             handler.postDelayed(this, 500);
         }
@@ -311,6 +340,9 @@ public final class PlayerActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         tvMode = DeviceProfile.isTv(this);
+        danmakuPrefs = getSharedPreferences("danmaku", MODE_PRIVATE);
+        // 电视端整条控件栏都隐藏，够不着开关，默认别在大屏上叠字
+        danmakuEnabled = danmakuPrefs.getBoolean("enabled", !tvMode);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
@@ -333,6 +365,7 @@ public final class PlayerActivity extends Activity {
             currentItem = payload.optJSONObject("item");
             if (currentItem == null) throw new IllegalArgumentException("没有影片信息");
             group = payload.optString("group");
+            currentSourceMode = payload.optString("source", "hongguo");
             queue = payload.optJSONArray("queue");
             if (queue == null) queue = new JSONArray();
             episodes = payload.optJSONArray("episodes");
@@ -349,10 +382,64 @@ public final class PlayerActivity extends Activity {
         } catch (Exception error) { finish(); return; }
 
         buildUi();
+        applyDanmakuStyle();
+        /* 刚从播放页退出来、三分钟内又点同一集：直接接管那个播放器。
+           解码器已经 configure 好、缓冲还在原位，画面几乎立刻出来。接管失败就老老实实新建。 */
+        PlayerKeeper.Session kept = null;
+        try {
+            kept = PlayerKeeper.take(ContentMode.get(this).active() + "#" + cacheKey(currentId, currentEpisode));
+        } catch (Throwable ignored) { }
+        if (kept != null && attachKeptPlayer(kept)) {
+            handler.post(tick);
+            return;
+        }
         player = createEpisodePlayer(false);
         activeView.setPlayer(player);
         loadSelection();
         handler.post(tick);
+    }
+
+    /** 接管寄存的播放器：UI 重新挂一遍，媒体源和解码器保持原样。 */
+    private boolean attachKeptPlayer(PlayerKeeper.Session kept) {
+        try {
+            player = kept.player;
+            currentSource = kept.source;
+            currentMime = kept.mime;
+            activeFirstFrame = kept.firstFrame;
+            lastMedia = kept.media;
+            // 弹幕与进度回传都依赖 currentVid；接管路径不走 loadSelection，得从寄存的取流信息补回来
+            currentVid = lastMedia == null ? "" : lastMedia.optString("vid", "");
+            MediaRequestContext.set(lastMedia, currentSource);
+            switchStartedAt = SystemClock.elapsedRealtime();
+            title.setText(currentItem.optString("title") + " · 第 " + currentEpisode + " 集");
+            episodeText.setText(isAiQueue() ? "AI 作品" : "第 " + currentEpisode + " 集");
+            updateBookmarkButton();
+            engineListener = buildEngineListener(player);
+            player.addListener(engineListener);
+            activeView.setPlayer(player);
+            applyPlaybackSpeed(speedLocked ? 2f : manualSpeed);
+            if (activeFirstFrame) {
+                showActiveFrame();
+            } else {
+                skeleton.setVisibility(View.VISIBLE);
+                loading.setVisibility(View.VISIBLE);
+            }
+            // 上一集刚好播完就退出的话，回来从头开始，别停在 ENDED 不动
+            if (player.getPlaybackState() == Player.STATE_ENDED) {
+                player.seekTo(0);
+                player.prepare();
+            }
+            player.setPlayWhenReady(true);
+            armReuseGuard(player);
+            maybePrepareNext();
+            Log.d("HuangGuoPlayback", "adopt " + cacheKey(currentId, currentEpisode)
+                    + " pos=" + kept.position + " frame=" + activeFirstFrame);
+            return true;
+        } catch (Throwable error) {
+            Log.w("HuangGuoPlayback", "adopt failed", error);
+            try { PlayerKeeper.release(); } catch (Throwable ignored) { }
+            return false;
+        }
     }
 
     private ExoPlayer createEpisodePlayer(boolean standby) {
@@ -360,7 +447,15 @@ public final class PlayerActivity extends Activity {
         ExoPlayer engine = new ExoPlayer.Builder(this).setLoadControl(control)
                 .setMediaSourceFactory(VideoPlaybackCache.sources(this)).build();
         if (standby) standbyLoadControl = control;
-        engine.addListener(new Player.Listener() {
+        Player.Listener listener = buildEngineListener(engine);
+        if (standby) standbyListener = listener; else engineListener = listener;
+        engine.addListener(listener);
+        return engine;
+    }
+
+    /** 监听器单独抽出来：接管寄存的播放器时要给新实例重新挂一份。 */
+    private Player.Listener buildEngineListener(ExoPlayer engine) {
+        return new Player.Listener() {
             @Override public void onPlaybackStateChanged(int state) {
                 if (engine != player || currentSource == null || destroyed) return;
                 if (state == Player.STATE_READY) {
@@ -449,8 +544,7 @@ public final class PlayerActivity extends Activity {
                 message.setOnClickListener(view -> loadSelection());
                 Log.e("HuangGuo", "Player error", error);
             }
-        });
-        return engine;
+        };
     }
 
     private void resizeVideo(PlayerView view, androidx.media3.common.VideoSize size) {
@@ -585,6 +679,10 @@ public final class PlayerActivity extends Activity {
         incoming.setBackgroundColor(0xFF242321);
         incoming.setVisibility(View.GONE);
         root.addView(incoming, new FrameLayout.LayoutParams(-1, -1));
+        // 弹幕层压在视频/转场之上、手势层之下：不拦截触摸，播放器的双击/滑动照旧
+        danmakuView = new DanmakuView(this);
+        danmakuView.setOverlayVisible(false);
+        root.addView(danmakuView, new FrameLayout.LayoutParams(-1, -1));
 
         View gesture = new View(this);
         root.addView(gesture, new FrameLayout.LayoutParams(-1, -1));
@@ -607,6 +705,40 @@ public final class PlayerActivity extends Activity {
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(42), 1);
         titleParams.leftMargin = dp(12);
         top.addView(title, titleParams);
+        if (!tvMode) {
+            /* 两颗按钮放在标题栏右侧，但整组只在控件条唤出时出现（点一下屏幕亮 3 秒）。
+               常驻在画面上方太抢戏；文字直接写明开/关，长按开关也能进设置。 */
+            danmakuControls = new LinearLayout(this);
+            danmakuControls.setOrientation(LinearLayout.HORIZONTAL);
+            danmakuControls.setGravity(Gravity.CENTER_VERTICAL);
+
+            danmakuButton = label("弹幕 开", 13, 0xFFFFD45B);
+            danmakuButton.setGravity(Gravity.CENTER);
+            danmakuButton.setTypeface(null, Typeface.BOLD);
+            danmakuButton.setIncludeFontPadding(false);
+            danmakuButton.setPadding(dp(11), 0, dp(11), 0);
+            danmakuButton.setOnClickListener(v -> toggleDanmaku());
+            danmakuButton.setOnLongClickListener(v -> { showDanmakuSettings(); return true; });
+            danmakuControls.addView(danmakuButton, new LinearLayout.LayoutParams(-2, dp(34)));
+
+            danmakuSettingsButton = label("弹幕设置", 12, 0xFFE8E2D8);
+            danmakuSettingsButton.setGravity(Gravity.CENTER);
+            danmakuSettingsButton.setIncludeFontPadding(false);
+            danmakuSettingsButton.setPadding(dp(9), 0, dp(9), 0);
+            GradientDrawable settingsBg = background(0x66000000, 17);
+            settingsBg.setStroke(dp(1), 0x66FFFFFF);
+            danmakuSettingsButton.setBackground(settingsBg);
+            danmakuSettingsButton.setContentDescription("弹幕设置");
+            danmakuSettingsButton.setOnClickListener(v -> showDanmakuSettings());
+            LinearLayout.LayoutParams settingsParams = new LinearLayout.LayoutParams(-2, dp(34));
+            settingsParams.leftMargin = dp(6);
+            danmakuControls.addView(danmakuSettingsButton, settingsParams);
+
+            LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-2, dp(34));
+            groupParams.leftMargin = dp(6);
+            top.addView(danmakuControls, groupParams);
+            updateDanmakuButton();
+        }
         if (tvMode) {
             /* 标题靠左占满，时间贴右边。只在控件条唤出期间可见 */
             tvClock = label("", 14, 0xFFD5D0CD);
@@ -981,6 +1113,8 @@ public final class PlayerActivity extends Activity {
     private void finishSeekPreview(SeekBar bar) {
         stopSeekPreview();
         if (player != null && player.getDuration() > 0) player.seekTo(player.getDuration() * bar.getProgress() / 1000);
+        // 拖动后按新位置重新取窗口，别把旧时间轴的弹幕留在屏上
+        resetDanmaku();
         saveProgress(false);
         revealControls();
     }
@@ -1272,6 +1406,7 @@ public final class PlayerActivity extends Activity {
         currentSource = null;
         // 切集先清空 vid：新的播放地址到达前不拿上一集的 id 去回传进度
         currentVid = "";
+        resetDanmaku();
         activeFirstFrame = false;
         failedStandbyKey = null;
         currentId = id;
@@ -1290,6 +1425,9 @@ public final class PlayerActivity extends Activity {
             currentSource = standbySource;
             currentMime = standbyMime;
             activeFirstFrame = standbyFirstFrame;
+            // 换了播放器，监听器也要跟着换，否则退出时摘不掉旧 Activity 的引用
+            engineListener = standbyListener;
+            standbyListener = null;
             standbyLoadControl.promote();
             standbyPlayer = null;
             standbyKey = null;
@@ -1334,6 +1472,7 @@ public final class PlayerActivity extends Activity {
                     currentMime = ready.optString("mimeType", MimeTypes.APPLICATION_M3U8);
                     // 直连模式：把后端随播放地址下发的 Referer / 签名 Cookie 交给数据源
                     MediaRequestContext.set(ready, currentSource);
+                    lastMedia = ready;
                     // 每次开播按当前通道模式重建数据源（直连/代理/后端转发切换立即生效）
                     MediaItem mediaItem = new MediaItem.Builder().setUri(currentSource).setMediaId(key)
                             .setMimeType(currentMime).build();
@@ -1798,6 +1937,9 @@ public final class PlayerActivity extends Activity {
             titleBar.setVisibility(tvInfoShown ? View.VISIBLE : View.INVISIBLE);
             return;
         }
+        // 弹幕开关/设置只跟着控件条出现：3 秒自动收起后一起消失，别一直挂在画面上方
+        if (danmakuControls != null)
+            danmakuControls.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
         titleBar.setVisibility(isLandscapeFullscreen() && !controlsShown ? View.INVISIBLE : View.VISIBLE);
     }
 
@@ -2090,6 +2232,199 @@ public final class PlayerActivity extends Activity {
                     player.getCurrentPosition(), player.getDuration(),
                     episodes == null ? 0 : episodes.length());
         } catch (Exception ignored) { }
+    }
+
+    /* ================= 红果官方弹幕（只读） =================
+       每 500ms 由 tick 校准一次播放位置；按 30 秒窗口取数，只取当前窗口 + 预取下一窗。
+       开关与样式存 SharedPreferences，长按标题栏右侧的「弹」进设置。 */
+
+    private boolean danmakuSupported() {
+        return "hongguo".equals(currentSourceMode) && currentVid != null
+                && currentVid.matches("\\d{10,}");
+    }
+
+    private void updateDanmaku(long position, long duration) {
+        if (danmakuView == null) return;
+        boolean on = danmakuEnabled && danmakuSupported() && foreground && !destroyed;
+        if (!on) {
+            if (danmakuShown) {
+                danmakuShown = false;
+                danmakuView.setOverlayVisible(false);
+            }
+            return;
+        }
+        // 新一集的 vid 到位了：丢掉上一集的窗口与在屏弹幕
+        if (!currentVid.equals(danmakuVid)) resetDanmaku();
+        if (!danmakuShown) {
+            danmakuShown = true;
+            danmakuView.setOverlayVisible(true);
+        }
+        boolean playing = player != null && player.isPlaying() && !seeking;
+        danmakuView.setPosition(position, playing,
+                player == null ? 1f : player.getPlaybackParameters().speed);
+        if (!playing) return;
+        long window = (position / HongguoDanmaku.WINDOW_MS) * HongguoDanmaku.WINDOW_MS;
+        if (danmakuWindow != window) {
+            danmakuWindow = window;
+            requestDanmakuWindow(window, duration);
+            showDanmakuWindows();
+        }
+        // 进入当前窗口 10 秒后再预取下一窗，别一进播放器就连打两个请求
+        if (position - window > 10_000) requestDanmakuWindow(window + HongguoDanmaku.WINDOW_MS, duration);
+    }
+
+    private void requestDanmakuWindow(long window, long duration) {
+        if (!danmakuEnabled || !danmakuSupported() || window < 0) return;
+        if (duration > 0 && window > duration + HongguoDanmaku.WINDOW_MS) return;
+        List<HongguoDanmaku.Item> cached = danmakuWindows.get(window);
+        if (cached != null && !cached.isEmpty()) return;
+        synchronized (danmakuPending) {
+            if (!danmakuPending.add(window)) return;
+        }
+        final int token = danmakuToken;
+        final String vid = currentVid;
+        final String seriesId = currentId;
+        final long itemDuration = duration > 0 ? duration : 120_000L;
+        danmakuWorker.submit(() -> {
+            List<HongguoDanmaku.Item> items;
+            try { items = HongguoDanmaku.fetch(vid, seriesId, window, itemDuration); }
+            catch (Exception error) { items = Collections.emptyList(); }
+            synchronized (danmakuPending) { danmakuPending.remove(window); }
+            final List<HongguoDanmaku.Item> result = items;
+            runOnUiThread(() -> {
+                if (token != danmakuToken || destroyed || !vid.equals(currentVid)) return;
+                danmakuWindows.put(window, result);
+                if (danmakuWindows.size() > 5) {
+                    long keepFrom = danmakuWindow - HongguoDanmaku.WINDOW_MS;
+                    danmakuWindows.keySet().removeIf(key -> key < keepFrom);
+                }
+                showDanmakuWindows();
+            });
+        });
+    }
+
+    private void showDanmakuWindows() {
+        if (danmakuView == null || !danmakuEnabled || danmakuWindow < 0) return;
+        List<HongguoDanmaku.Item> merged = new ArrayList<>();
+        List<HongguoDanmaku.Item> current = danmakuWindows.get(danmakuWindow);
+        List<HongguoDanmaku.Item> next = danmakuWindows.get(danmakuWindow + HongguoDanmaku.WINDOW_MS);
+        if (current != null) merged.addAll(current);
+        if (next != null) merged.addAll(next);
+        // 跨窗口那一刻数据还没回来：先别清屏，让上一窗的字自然飘走，避免整屏一闪
+        if (!merged.isEmpty()) danmakuView.setItems(merged);
+    }
+
+    private void resetDanmaku() {
+        ++danmakuToken;
+        synchronized (danmakuPending) { danmakuPending.clear(); }
+        danmakuWindows.clear();
+        danmakuWindow = -1;
+        danmakuVid = currentVid == null ? "" : currentVid;
+        if (danmakuView != null) danmakuView.reset();
+    }
+
+    private void toggleDanmaku() {
+        if (!danmakuEnabled && !danmakuSupported()) { toast("当前片源暂无官方弹幕"); return; }
+        danmakuEnabled = !danmakuEnabled;
+        danmakuPrefs.edit().putBoolean("enabled", danmakuEnabled).apply();
+        updateDanmakuButton();
+        if (danmakuEnabled) {
+            resetDanmaku();
+            toast("弹幕已开启，正在加载… 点右侧「设置」可调整样式");
+        } else {
+            danmakuShown = false;
+            if (danmakuView != null) danmakuView.setOverlayVisible(false);
+            ++danmakuToken;
+            synchronized (danmakuPending) { danmakuPending.clear(); }
+            danmakuWindows.clear();
+            toast("弹幕已关闭");
+        }
+    }
+
+    private void updateDanmakuButton() {
+        if (danmakuButton == null) return;
+        // 文字写死「开 / 关」，再用实心黄底 + 黄边把开启态做得一眼可辨，不只靠颜色深浅
+        danmakuButton.setText(danmakuEnabled ? "弹幕 开" : "弹幕 关");
+        danmakuButton.setTextColor(danmakuEnabled ? 0xFFFFD45B : 0xFFBDB7AE);
+        GradientDrawable pill = background(danmakuEnabled ? 0x993A2D08 : 0x66000000, 17);
+        pill.setStroke(dp(1), danmakuEnabled ? 0xFFF5D782 : 0x55FFFFFF);
+        danmakuButton.setBackground(pill);
+        danmakuButton.setAlpha(1f);
+        danmakuButton.setContentDescription(danmakuEnabled
+                ? "弹幕已开启，点击关闭；长按或点右侧设置按钮可调整样式"
+                : "弹幕已关闭，点击开启；长按或点右侧设置按钮可调整样式");
+    }
+
+    private void applyDanmakuStyle() {
+        if (danmakuView == null || danmakuPrefs == null) return;
+        float density = getResources().getDisplayMetrics().density;
+        int sizeDp = danmakuPrefs.getInt("size", 15);
+        int opacity = danmakuPrefs.getInt("opacity", 88);
+        long travel = danmakuPrefs.getLong("travel", 9_000L);
+        Set<String> words = new HashSet<>();
+        for (String word : danmakuPrefs.getString("block", "").split("[,，\\n]")) {
+            String trimmed = word.trim();
+            if (!trimmed.isEmpty()) words.add(trimmed);
+        }
+        danmakuView.setStyle(sizeDp * density, opacity, travel, words);
+    }
+
+    private SeekBar danmakuSlider(LinearLayout parent, String caption, int max, int value) {
+        TextView captionView = label(caption, 12, 0xFFD5D0CD);
+        captionView.setPadding(0, dp(8), 0, 0);
+        parent.addView(captionView, new LinearLayout.LayoutParams(-1, -2));
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max);
+        bar.setProgress(Math.max(0, Math.min(max, value)));
+        bar.setProgressTintList(android.content.res.ColorStateList.valueOf(YELLOW));
+        bar.setThumbTintList(android.content.res.ColorStateList.valueOf(YELLOW));
+        parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(34)));
+        return bar;
+    }
+
+    private void showDanmakuSettings() {
+        /* 样式是全局偏好，与当前这一集有没有弹幕无关；刚起播时 vid 还没到位，
+           若在这里卡 danmakuSupported()，设置按钮会变成点了只弹一句 toast，很难用。 */
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(20), dp(6), dp(20), dp(4));
+        TextView note = label("只读取红果官方弹幕，不发送、不影响播放（仅红果源有弹幕）。\n点标题栏「弹幕设置」或长按开关按钮可再次打开本设置。", 11, 0xFF9A9287);
+        panel.addView(note, new LinearLayout.LayoutParams(-1, -2));
+        SeekBar opacityBar = danmakuSlider(panel, "不透明度", 100, danmakuPrefs.getInt("opacity", 88));
+        SeekBar sizeBar = danmakuSlider(panel, "字号", 10, danmakuPrefs.getInt("size", 15) - 12);
+        long travel = danmakuPrefs.getLong("travel", 9_000L);
+        SeekBar speedBar = danmakuSlider(panel, "滚动速度（越右越快）", 9,
+                Math.max(0, Math.min(9, Math.round((14_000L - travel) / 1000f))));
+        TextView blockCaption = label("屏蔽词（逗号分隔）", 12, 0xFFD5D0CD);
+        blockCaption.setPadding(0, dp(8), 0, 0);
+        panel.addView(blockCaption, new LinearLayout.LayoutParams(-1, -2));
+        EditText blockInput = new EditText(this);
+        blockInput.setText(danmakuPrefs.getString("block", ""));
+        blockInput.setHint("例如：剧透,广告");
+        blockInput.setSingleLine(true);
+        panel.addView(blockInput, new LinearLayout.LayoutParams(-1, -2));
+        new AlertDialog.Builder(this)
+                .setTitle("弹幕设置")
+                .setView(panel)
+                .setPositiveButton("保存", (dialog, which) -> {
+                    danmakuPrefs.edit()
+                            .putInt("opacity", opacityBar.getProgress())
+                            .putInt("size", sizeBar.getProgress() + 12)
+                            .putLong("travel", 14_000L - speedBar.getProgress() * 1_000L)
+                            .putString("block", blockInput.getText().toString())
+                            .apply();
+                    applyDanmakuStyle();
+                    toast("弹幕设置已保存");
+                })
+                .setNeutralButton("恢复默认", (dialog, which) -> {
+                    danmakuPrefs.edit().remove("opacity").remove("size")
+                            .remove("travel").remove("block").apply();
+                    applyDanmakuStyle();
+                    toast("已恢复默认");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+        revealControls();
     }
 
     @Override protected void onPause() {
@@ -2606,7 +2941,32 @@ public final class PlayerActivity extends Activity {
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);
         handler.removeCallbacksAndMessages(null);
         worker.shutdownNow();
-        if (player != null) player.release();
+        danmakuWorker.shutdownNow();
+        if (danmakuView != null) danmakuView.reset();
+        if (player != null) {
+            /* 正常退出就把它寄存下来：同一集三分钟内再进来直接接管，不用重建解码器。
+               出过错、AI 队列、或是配置变更（转屏）则照旧释放。只有真出过画面才值得留，
+               没出帧的多半是取流/解码有问题，留着复用反而更慢。 */
+            boolean keep = isFinishing() && !isChangingConfigurations()
+                    && currentSource != null && !isAiQueue()
+                    && player.getPlayerError() == null
+                    && player.getPlaybackState() != Player.STATE_IDLE
+                    && activeFirstFrame;
+            if (keep) {
+                try {
+                    player.pause();
+                    if (engineListener != null) player.removeListener(engineListener);
+                    activeView.setPlayer(null);
+                    PlayerKeeper.keep(player,
+                            ContentMode.get(this).active() + "#" + cacheKey(currentId, currentEpisode),
+                            currentSource, currentMime, player.getCurrentPosition(), activeFirstFrame, lastMedia);
+                    player = null;
+                } catch (Throwable error) {
+                    Log.w("HuangGuoPlayback", "keep player failed", error);
+                }
+            }
+            if (player != null) player.release();
+        }
         super.onDestroy();
     }
 }

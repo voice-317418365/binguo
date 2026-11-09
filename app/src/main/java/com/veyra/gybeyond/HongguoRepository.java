@@ -17,7 +17,12 @@ import android.util.LruCache;
 
 final class HongguoRepository {
     private final ContentRepository upstream = new ContentRepository(new OkHttpClient(), System::currentTimeMillis);
-    private final LruCache<String, Detail> details = new LruCache<>(32);
+    /*
+     * 详情/播放地址缓存必须是「进程级」的：MainActivity 与 PlayerActivity 各会 new 一个
+     * HongguoRepository，挂在实例上会让详情页预热好的地址在播放页失效、重新签名取流，
+     * 拿到带新签名的 URL 后预热实例也跟着作废。
+     */
+    private static final LruCache<String, Detail> details = new LruCache<>(32);
     private final HongguoGenres genres = new HongguoGenres(upstream.getHttp());
     private final HongguoSearch search = new HongguoSearch(upstream.getHttp());
 
@@ -45,6 +50,9 @@ final class HongguoRepository {
             if (position != null) {
                 if (position.getRank() != null) card.put("rank", position.getRank());
                 if (!position.getHeat().isEmpty()) card.put("heat", position.getHeat());
+                // 「最多收藏」按这个数排；文本保留站点原文给列表卡片显示
+                if (position.getCollect() > 0) card.put("collect", position.getCollect());
+                if (!position.getCollectText().isEmpty()) card.put("collectText", position.getCollectText());
             }
             items.put(card);
         }
@@ -55,6 +63,47 @@ final class HongguoRepository {
         if (!"short".equals(id) && !"comic".equals(id)) throw new IllegalArgumentException("无效分类");
         return listing(upstream.home(page, "comic".equals(id) ? ContentType.COMIC : ContentType.SHORT), page, id);
     }
+    /**
+     * 「全部类型」页的三个排序类别。数据全部取自红果官方总热播榜（前 3 页），
+     * 卡片自带名次、热度、收藏数：
+     *  hot     = 官方综合热度榜原顺序；collect = 按站点公布的收藏数降序；
+     *  latest  = 按 series_id 倒序（字节雪花 ID 随时间递增，等价于上架时间从新到旧）。
+     */
+    JSONObject sortedBoard(String kind) throws Exception {
+        if (!"latest".equals(kind) && !"hot".equals(kind) && !"collect".equals(kind))
+            throw new IllegalArgumentException("无效榜单类别");
+        JSONArray merged = new JSONArray();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (int page = 1; page <= 3; page++) {
+            CatalogPage board = upstream.ranking("hot-drama", page);
+            JSONArray rows = listing(board, page, "short").getJSONArray("items");
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject item = rows.getJSONObject(i);
+                if (seen.add(item.optString("id"))) merged.put(item);
+            }
+            if (!board.getHasMore()) break;
+        }
+        return new JSONObject().put("items", sortBoardItems(merged, kind)).put("nextPage", JSONObject.NULL);
+    }
+
+    /** 排序逻辑单独抽出：hot 保持官方榜单顺序，其余两种按真实数值重排。 */
+    static JSONArray sortBoardItems(JSONArray merged, String kind) throws Exception {
+        java.util.List<JSONObject> items = new java.util.ArrayList<>();
+        for (int i = 0; i < merged.length(); i++) items.add(merged.getJSONObject(i));
+        if ("collect".equals(kind)) {
+            items.sort((a, b) -> Double.compare(b.optDouble("collect", 0), a.optDouble("collect", 0)));
+        } else if ("latest".equals(kind)) {
+            items.sort((a, b) -> {
+                String x = a.optString("id", ""), y = b.optString("id", "");
+                if (x.length() != y.length()) return Integer.compare(y.length(), x.length());
+                return y.compareTo(x);
+            });
+        } // hot 保持官方榜单顺序
+        JSONArray out = new JSONArray();
+        for (JSONObject item : items) out.put(item);
+        return out;
+    }
+
     JSONObject home() throws Exception {
         JSONObject shorts = category("short", 1), comics = category("comic", 1);
         JSONArray featured = new JSONArray(), items = shorts.getJSONArray("items");
@@ -76,7 +125,20 @@ final class HongguoRepository {
             episodes.put(new JSONObject().put("number", i + 1).put("videoId", detail.getEpisodes().get(i)));
         return result.put("episodes", episodes).put("episodeLabel", "共 " + episodes.length() + " 集");
     }
+    /*
+     * 播放地址缓存：同一集反复点开不该每次都重新签名取流（一次 resolve = 拼设备参数 +
+     * 签名 + 一次 HTTPS 往返）。红果地址带时效，只留 8 分钟，过期重新解析。
+     * 注意：这里保留我方 RelayPlayback 取流链路，不引入上游的直连优先 resolveStream。
+     */
+    private static final long EPISODE_TTL_MS = 8 * 60 * 1000L;
+    private static final LruCache<String, JSONObject> episodes = new LruCache<>(32);
+    private static final java.util.Map<String, Long> episodeAt = new java.util.concurrent.ConcurrentHashMap<>();
+
     JSONObject episode(String id, int number) throws Exception {
+        final String cacheKey = id + "#" + number;
+        JSONObject cached = episodes.get(cacheKey);
+        Long at = episodeAt.get(cacheKey);
+        if (cached != null && at != null && System.currentTimeMillis() - at < EPISODE_TTL_MS) return cached;
         Detail detail = details.get(id);
         if (detail == null) { detail = upstream.detail(id); details.put(id, detail); }
         if (number < 1 || number > detail.getEpisodes().size()) throw new IllegalArgumentException("无效集数");
@@ -94,8 +156,44 @@ final class HongguoRepository {
             for (byte b : key) hex.append(String.format("%02x", b));
             result.put("key", hex.toString());
         }
+        episodes.put(cacheKey, result);
+        episodeAt.put(cacheKey, System.currentTimeMillis());
         return result;
     }
+
+    /*
+     * 预热点播：用户从「看到详情页」到「点播放」之间通常有好几秒，这段时间在后台把
+     * 播放地址解析好、RemoteVideo prepare 好、首片铺进内存，点下去时 open() 直接命中。
+     */
+    private static final java.util.concurrent.ExecutorService PREWARM_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
+                Thread thread = new Thread(runnable, "hongguo-prewarm");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private static final java.util.Set<String> PREWARMING =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+
+    void prewarm(String id, int number) {
+        if (id == null || id.isEmpty() || number < 1) return;
+        final String key = id + "#" + number;
+        if (!PREWARMING.add(key)) return;
+        try {
+            PREWARM_POOL.execute(() -> {
+                try {
+                    JSONObject data = episode(id, number);
+                    HongguoPlayback.warm(data.optString("source"));
+                } catch (Exception ignored) {
+                    // 预热失败无所谓：真点播时还会走一次完整流程
+                } finally {
+                    PREWARMING.remove(key);
+                }
+            });
+        } catch (Throwable error) {
+            PREWARMING.remove(key);
+        }
+    }
+
     String coverData(String url) throws Exception {
         // 云端历史的 thumb_url 有三种历史形态：http://、协议相对 //host/…、以及只给
         // 资源路径（tos-cn-i-…/…）。红果的 CDN 都支持 https，所以统一转过去；

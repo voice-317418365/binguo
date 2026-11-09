@@ -606,18 +606,11 @@ async function checkUpdate(manual) {
   try {
     const result = await api("check-update", { manual });
     if (result.status === "available") {
+      // 这个版本用户点过「取消」：冷启动就不再亮角标打扰
+      if (!manual && dismissedUpdateVersion() === String(result.version || "")) return;
       setAvailableUpdate(result);
-      if (manual) {
-        showUpdate(result);
-        return;
-      }
-      if (dismissedUpdateVersion() === String(result.version || "")) return;
-      try {
-        await api("download-update");
-        showUpdate(result);
-      } catch (ignore) {
-        showUpdate(result);
-      }
+      // 只亮角标，不在后台静默下载：点检查更新 → 弹窗 → 点立即下载
+      if (manual) showUpdate(result);
     } else if (result.status === "current" || result.status === "unpublished" || result.status === "none") {
       setAvailableUpdate(null);
       if (manual && result.status === "current") toast(`\u5DF2\u662F\u6700\u65B0\u7248\u672C ${result.version}`);
@@ -690,7 +683,7 @@ api("theme").then(window.hgTheme).catch(() => {
 function itemCard(item) {
   const id = esc(item.id);
   const title = esc(item.title || "\u5F71\u7247");
-  const info = esc(item.heat || item.episodeLabel || asArray(item.tags).slice(0, 2).join(" \xB7 ") || "\u6253\u5F00\u8BE6\u60C5");
+  const info = esc(item.infoOverride || item.heat || item.episodeLabel || asArray(item.tags).slice(0, 2).join(" \xB7 ") || "\u6253\u5F00\u8BE6\u60C5");
   const rank = Number(item.rank) || 0;
   const scoreText = rank ? `#${rank}` : item.score || "";
   const scoreClass = rank ? `poster-score is-rank${rank <= 3 ? " is-top" : ""}` : "poster-score";
@@ -1086,6 +1079,8 @@ async function resumeFromHome(id) {
   if (!item || String(item.id) !== id) return;
   const source = contentSource;
   const episode = Math.max(1, Number(item.episode) || 1) + (item.completed ? 1 : 0);
+  // 点下去就预热，和 goDetail 的请求并行，别串着等
+  api("prewarm", { id, episode }).catch(() => {});
   const token = routeToken + 1;
   await goDetail(id);
   if (routeToken !== token || contentSource !== source || state.route !== "detail" || state.detailLoading || String((_a2 = state.detail) == null ? void 0 : _a2.id) !== id) return;
@@ -1119,6 +1114,8 @@ function renderTags() {
   var _a2;
   const tags = asArray((_a2 = state.tags) == null ? void 0 : _a2.items);
   const sections = privateMode() ? tagGroups : [["short", "\u77ED\u5267\u7C7B\u578B"], ["comic", "\u6F2B\u5267\u7C7B\u578B"]];
+  const boards = `<section class="tags-group tags-group-board"><h2>榜单速览</h2><div class="tags-grid tags-grid-board">${RANK_BOARDS.map(([kind, name, note]) =>
+    `<button type="button" class="tag-choice rank-choice" data-rank-kind="${kind}" data-rank-name="${esc(name)}"><strong>《${esc(name)}》</strong><small>${esc(note)}</small></button>`).join("")}</div></section>`;
   const groups = sections.map(([id, title]) => {
     const members = tags.filter((tag) => tag.group === id);
     if (!members.length) return "";
@@ -1129,7 +1126,7 @@ function renderTags() {
     }).join("")}</div></section>`;
   }).join("");
   content.innerHTML = `<div class="tags-page"><div class="tags-heading"><button type="button" data-back="1" aria-label="\u8FD4\u56DE\u4E0A\u4E00\u9875">${icon("back")}</button><h1>\u5168\u90E8\u7C7B\u578B</h1><span>${tags.length} \u4E2A${privateMode() ? "\u6807\u7B7E" : "\u5927\u7C7B"}</span></div>
-    <p class="tags-intro">${privateMode() ? "\u70B9\u9009\u6807\u7B7E\uFF0C\u53D1\u73B0\u76F8\u5173\u4F5C\u54C1" : "\u6309\u77ED\u5267\u3001\u6F2B\u5267\u5927\u7C7B\uFF0C\u53D1\u73B0\u76F8\u5173\u4F5C\u54C1"}</p>${groups}</div>`;
+    <p class="tags-intro">${privateMode() ? "\u70B9\u9009\u6807\u7B7E\uFF0C\u53D1\u73B0\u76F8\u5173\u4F5C\u54C1" : "\u6309\u77ED\u5267\u3001\u6F2B\u5267\u5927\u7C7B\uFF0C\u53D1\u73B0\u76F8\u5173\u4F5C\u54C1"}</p>${boards}${groups}</div>`;
 }
 function refreshMissingImages(items) {
   const byId = new Map(items.filter((item) => (item == null ? void 0 : item.id) && (item == null ? void 0 : item.cover)).map((item) => [String(item.id), item.cover]));
@@ -1516,18 +1513,18 @@ function downloadTaskRow(task, kind) {
   const sourceBadge = kind === "nas" ? '<span class="dl-source-badge nas">NAS</span>' : remoteKind ? `<span class="dl-source-badge ${kind}">${deviceLabel} \xB7 ${esc(task.deviceName || "\u5728\u7EBF")}</span>` : '<span class="dl-source-badge phone">\u624B\u673A</span>';
   const remoteJob = kind === "phone" ? remoteJobs.get(String(task.id)) : null;
   const remoteText = remoteJobText(remoteJob);
-  const remoteBusy = !!(remoteJob && (remoteJob.status === "running" || remoteJob.status === "queued"));
-  const canTransfer = kind === "phone" && !running && !remoteBusy && (task.status === "done" || task.status === "ready" || task.status === "failed");
-  const transferBtn = canTransfer ? `<button type="button" class="dl-cancel dl-transfer" data-dl-transfer="${esc(task.id)}">${remoteJob && remoteJob.status === "failed" ? "\u91CD\u4F20" : "\u4F20\u5230\u670D\u52A1\u5668"}</button>` : "";
+  // 「传到服务器」入口已下线：只在任务进行中保留取消传输与状态显示
   const transferCancel = remoteJob && (remoteJob.status === "running" || remoteJob.status === "queued") ? `<button type="button" class="dl-cancel" data-dl-transfer-cancel="${esc(remoteJob.id)}">\u53D6\u6D88\u4F20\u8F93</button>` : "";
-  const output = task.output && (task.output.startsWith("content://") || task.output.startsWith("file://")) ? "\u5DF2\u4FDD\u5B58\u5230\u7CFB\u7EDF\u4E0B\u8F7D\u76EE\u5F55" : task.output || "";
+  const output = task.output && (task.output.startsWith("content://") || task.output.startsWith("file://")) ? (task.detail || "").includes("\u5DF2\u5408\u5E76") ? "\u5DF2\u4FDD\u5B58\u5408\u5E76\u540E\u7684\u5B8C\u6574\u89C6\u9891" : "\u5DF2\u4FDD\u5B58\u5230\u7CFB\u7EDF\u4E0B\u8F7D\u76EE\u5F55" : task.output || "";
   const cancelBtn = running ? `<button type="button" class="dl-cancel" data-dl-cancel="${kind}" data-dl-id="${esc(task.id)}">\u53D6\u6D88</button>` : "";
   const retryBtn = !running && kind === "phone" && (task.status === "failed" || task.status === "canceled") && !(task.error || "").includes("\u5408\u5E76\u5931\u8D25") ? `<button type="button" class="dl-cancel dl-retry" data-dl-retry="phone" data-dl-id="${esc(task.id)}">\u91CD\u8BD5</button>` : "";
   const failedList = task.failedEpisodes || [];
   const srcNote = task.detail && task.detail.includes("\uFF08") ? (task.detail.match(/（([^）]*)）/) || [])[1] || "" : "";
   const canRetryFailed = task.status === "ready" || task.status === "failed" && !(task.error || "").includes("\u5408\u5E76\u5931\u8D25");
   const retryFailedBtn = !running && kind === "nas" && canRetryFailed && failedList.length > 0 ? `<button type="button" class="dl-cancel dl-retry" data-dl-retry-failed="nas" data-dl-id="${esc(task.id)}">\u91CD\u8BD5\u5931\u8D25${failedList.length}\u96C6</button>` : "";
-  const mergeBtn = !running && !remoteKind && (task.status === "ready" || (task.status === "failed" || task.status === "done") && (task.error || "").includes("\u5408\u5E76\u5931\u8D25")) ? `<button type="button" class="dl-cancel dl-retry" data-dl-merge="${kind}" data-dl-id="${esc(task.id)}">\u5408\u5E76</button>` : "";
+  const mergeBtn = !running && !remoteKind && (task.status === "ready" || (task.status === "failed" || task.status === "done") && (task.error || "").includes("\u5408\u5E76\u5931\u8D25")) ? `<button type="button" class="dl-cancel dl-merge" data-dl-merge="${kind}" data-dl-id="${esc(task.id)}" title="\u628A\u5DF2\u4E0B\u8F7D\u7684 ${Number(task.doneCount) || 0} \u96C6\u5408\u5E76\u6210 1 \u4E2A mp4\uFF0C\u4FDD\u5B58\u5230\u7CFB\u7EDF\u4E0B\u8F7D\u76EE\u5F55\uFF1B\u4E0D\u5408\u5E76\u4E5F\u80FD\u9010\u96C6\u64AD\u653E">\u5408\u5E76\u6210 1 \u4E2A\u89C6\u9891</button>` : "";
+  // 说清「合并」的输入、产出和不合并会怎样，避免用户不知道这个按钮在做什么
+  const mergeHint = mergeBtn ? `<div class="dl-merge-hint">\u5DF2\u4E0B\u597D ${Number(task.doneCount) || 0} \u96C6\uFF0C\u6BCF\u96C6\u662F\u4E00\u4E2A\u5355\u72EC\u6587\u4EF6\uFF1B\u5408\u5E76\u540E\u53EA\u7559 1 \u4E2A\u5B8C\u6574 mp4\uFF0C\u65B9\u4FBF\u4E00\u6B21\u770B\u5B8C\u6216\u62F7\u8D70\u3002\u4E0D\u5408\u5E76\u4E5F\u80FD\u9010\u96C6\u64AD\u653E\u3002</div>` : "";
   const deleteBtn = !running && !remoteKind ? `<button type="button" class="dl-cancel" data-dl-delete="${kind}" data-dl-id="${esc(task.id)}"${task.children && task.children.length > 1 ? ` data-dl-siblings="${esc(task.children.map((c) => c.id).join(","))}"` : ""}>\u5220\u9664</button>` : "";
   const failedInfo = failedList.length > 0 ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc("\u5931\u8D25\u96C6: " + failedList.map((f) => "\u7B2C" + f.index + "\u96C6(" + (f.error || "") + ")").join("\uFF1B"))}" title="\u70B9\u51FB\u590D\u5236\u5931\u8D25\u660E\u7EC6">\u5931\u8D25 ${failedList.length} \u96C6\uFF1A${esc(failedList.slice(0, 3).map((f) => "\u7B2C" + f.index + "\u96C6").join("\u3001"))}${failedList.length > 3 ? " \u7B49" : ""}</span>` : "";
   const errLog = task.error || task.debug || "";
@@ -1542,7 +1539,8 @@ function downloadTaskRow(task, kind) {
     <div class="download-task-head"><strong>${esc(task.title || "\u672A\u77E5\u5267\u96C6")}</strong>${sourceBadge}<span class="dl-status ${running ? "is-running" : ""}">${statusText}</span></div>
     <div class="download-task-meta">${task.doneCount}/${task.totalCount} \u96C6 \xB7 ${task.doneCount === task.totalCount && task.status !== "running" ? "\u5DF2\u4E0B\u8F7D\u5168\u90E8\u96C6" : failedList.length ? `\u5931\u8D25 ${failedList.length} \u96C6` : ""}${srcNote ? ` \xB7 <b class="dl-src-note">${esc(srcNote)}</b>` : ""}${detailHint}${remoteText ? ` \xB7 <span class="dl-remote-note ${remoteJob.status}">${esc(remoteText)}</span>` : ""}</div>
     <div class="download-track"><i style="width:${Math.max(0, Math.min(100, Number(task.percent) || 0))}%"></i></div>
-    <div class="download-task-foot">${output ? `<span class="dl-output">${esc(output)}</span>` : ""}${failedInfo}${errBlock}${transferBtn}${transferCancel}${mergeBtn}${retryFailedBtn}${retryBtn}${cancelBtn}${deleteBtn}</div>
+    ${mergeHint}
+    <div class="download-task-foot">${output ? `<span class="dl-output">${esc(output)}</span>` : ""}${failedInfo}${errBlock}${transferCancel}${mergeBtn}${retryFailedBtn}${retryBtn}${cancelBtn}${deleteBtn}</div>
   </div></div>`;
 }
 function remoteJobText(job) {
@@ -1563,8 +1561,8 @@ function downloadStatusText(task, kind) {
   }
   if (task.status === "ready") return failedCount > 0 ? `\u5DF2\u4E0B\u8F7D \xB7 \u5931\u8D25${failedCount}\u96C6` : "\u5DF2\u4E0B\u8F7D \xB7 \u5F85\u5408\u5E76";
   if (task.status === "done") {
-    if (kind === "nas") return "\u5DF2\u4E0B\u8F7D \xB7 \u5DF2\u5408\u5E76";
-    if ((task.detail || "").includes("\u5DF2\u5408\u5E76")) return "\u5DF2\u4E0B\u8F7D \xB7 \u5DF2\u5408\u5E76";
+    if (kind === "nas") return "\u5DF2\u5408\u5E76 \xB7 1 \u4E2A\u89C6\u9891";
+    if ((task.detail || "").includes("\u5DF2\u5408\u5E76")) return "\u5DF2\u5408\u5E76 \xB7 1 \u4E2A\u89C6\u9891";
     return "\u5DF2\u4E0B\u8F7D";
   }
   if (task.status === "failed") return failedCount > 0 ? `\u5931\u8D25 \xB7 \u53EF\u91CD\u8BD5${failedCount}\u96C6` : "\u5931\u8D25";
@@ -1578,9 +1576,55 @@ function downloadStatusText(task, kind) {
   if (detail.includes("\u5408\u5E76")) return "\u5408\u5E76\u4E2D";
   return "\u4E0B\u8F7D\u4E2D";
 }
+// 不限制集数：每集都要单独取流解析，集数越多「准备」越久，用实时进度告诉用户还在正常跑。
+const DOWNLOAD_RESOLVE_CONCURRENCY = 3;
+const DOWNLOAD_RESOLVE_TIMEOUT_MS = 15000;
+/* 「全部类型」页顶部的三个排序类别（数据取自红果官方总热播榜） */
+const RANK_BOARDS = [
+  ["latest", "最新上架", "按上架时间从新到旧"],
+  ["hot", "最高热度", "官方综合热度榜"],
+  ["collect", "最多收藏", "按官方收藏数排序"]
+];
 let downloadMode = null;
 const downloadSelection = /* @__PURE__ */ new Set();
 let downloadParsing = false;
+let downloadCancelled = false;
+let downloadJobId = 0;   // 每次提交一个令牌，防止「取消旧批 → 立刻重开」时旧解析结果误提交
+let downloadProgress = { total: 0, done: 0, stage: "" };
+// 有限并发地跑一批任务，返回顺序与入参一致（任一失败即整体失败）
+async function mapWithDownloadLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) {
+    runners.push((async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    })());
+  }
+  await Promise.all(runners);
+  return results;
+}
+// 解析阶段只做局部 DOM 更新，避免整块重绘导致进度条闪烁、取消按钮被重建
+function updateDownloadParsing() {
+  const p = downloadProgress;
+  const total = Math.max(p.total || 0, 1);
+  const pct = Math.min(100, Math.round(p.done / total * 100));
+  const fill = document.getElementById("dl-progress-fill");
+  if (fill) fill.style.width = pct + "%";
+  const stage = document.getElementById("dl-parsing-stage");
+  if (stage) stage.textContent = p.stage || "正在获取播放地址";
+  const count = document.getElementById("dl-parsing-count");
+  if (count) count.textContent = `已完成 ${p.done}/${p.total} 集 · 剩余 ${Math.max(p.total - p.done, 0)} 集`;
+}
+function cancelDownloadParsing() {
+  downloadCancelled = true;
+  hideDownloadSheet();
+  toast("已取消，本次没有开始下载");
+}
 function showDownloadSheet() {
   if (!state.detail) return;
   const episodes = asArray(state.detail.episodes);
@@ -1591,6 +1635,7 @@ function showDownloadSheet() {
   downloadMode = "episodes";
   downloadSelection.clear();
   downloadParsing = false;
+  downloadCancelled = false;
   downloadOverlay.hidden = false;
   updateBackEnabled();
   if (state.account.loggedIn) {
@@ -1602,6 +1647,8 @@ function showDownloadSheet() {
   renderDownloadSheet();
 }
 function hideDownloadSheet() {
+  // 准备阶段关掉弹层（返回键 / 点遮罩 / 取消按钮）都视为取消，后台不许再提交下载
+  if (downloadMode === "parsing") downloadCancelled = true;
   downloadOverlay.hidden = true;
   downloadParsing = false;
   updateBackEnabled();
@@ -1611,7 +1658,15 @@ function renderDownloadSheet() {
   if (!sheet) return;
   const episodes = asArray(state.detail.episodes);
   if (downloadMode === "parsing") {
-    sheet.innerHTML = `<p class="download-parsing">\u6B63\u5728\u89E3\u6790\u64AD\u653E\u5730\u5740\u2026<br><small>\u9700\u8981\u9010\u96C6\u89E3\u6790\uFF0C\u8BF7\u7A0D\u5019</small></p>`;
+    sheet.innerHTML = `<div class="download-parsing">
+      <div class="dl-parsing-title">正在准备下载</div>
+      <div class="dl-parsing-stage" id="dl-parsing-stage">正在获取播放地址</div>
+      <div class="dl-progress"><div class="dl-progress-fill" id="dl-progress-fill"></div></div>
+      <div class="dl-parsing-count" id="dl-parsing-count"></div>
+      <p class="dl-parsing-note">每集都要单独获取播放地址，集数越多准备得越久；全部准备好后会统一开始下载。请保持页面打开，进度正常推进就说明下载在正常准备中。</p>
+      <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-cancel-parse="1">取消</button></div>
+    </div>`;
+    updateDownloadParsing();
     return;
   }
   if (downloadMode === "target") {
@@ -1642,54 +1697,49 @@ function renderDownloadSheet() {
   const all = episodes.map((ep) => Number(ep.number) || 0);
   const checked = all.filter((n) => downloadSelection.has(n)).length;
   const allSelected = all.length && checked === all.length;
-  sheet.innerHTML = `<div class="download-sheet-toolbar"><button type="button" class="dl-secondary" data-dl-all="1">${allSelected ? "\u53D6\u6D88\u5168\u9009" : "\u5168\u9009"}</button><span>\u5DF2\u9009 ${checked}/${all.length} \u96C6</span></div>
+  const toggleLabel = allSelected ? "清空" : "全选";
+  sheet.innerHTML = `<div class="download-sheet-toolbar"><button type="button" class="dl-secondary" data-dl-all="1">${toggleLabel}</button><span class="dl-counter">已选 ${checked}/${all.length} 集</span></div>
     <div class="download-sheet-grid">${episodes.map((ep) => {
     const n = Number(ep.number) || 0;
-    return `<label class="dl-ep ${downloadSelection.has(n) ? "checked" : ""}" data-dl-ep="${n}"><span>${n}</span></label>`;
+    const on = downloadSelection.has(n);
+    return `<label class="dl-ep ${on ? "checked" : ""}" data-dl-ep="${n}"><span>${n}</span></label>`;
   }).join("")}</div>
-    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">\u53D6\u6D88</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? "" : "disabled"}>\u4E0B\u8F7D ${checked ? checked + " \u96C6" : ""}</button></div>`;
+    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">\u53D6\u6D88</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? "" : "disabled"}>\u4E0B\u8F7D ${checked ? checked + " \u96C6" : ""}</button></div>
+    <p class="dl-batch-note">不限集数，选多少下多少；集数越多准备播放地址越久，准备过程会显示实时进度。</p>`;
 }
-async function resolveEpisodesForDownload(episodes) {
-  const resolved = [];
+async function resolveEpisodesForDownload(episodes, onProgress) {
   const detailEpisodes = asArray(state.detail.episodes);
-  const hgJobs = [];
+  const privateNow = privateMode();
+  const direct = new Map();
+  const pending = [];
+  const failed = [];
+  const total = episodes.length;
+  let done = 0;
+  const bump = () => { done++; if (onProgress) onProgress(done, total); };
   for (const n of episodes) {
-    if (privateMode()) {
-      hgJobs.push({ n, p: api("episode", { id: state.detail.id, episode: n }) });
-      continue;
-    }
     const meta = detailEpisodes.find((ep) => Number(ep.number) === n);
-    if (meta && meta.url) {
-      resolved.push({ index: n, url: meta.url, key: "" });
-      continue;
-    }
-    let data;
-    try {
-      data = await api("episode", { id: state.detail.id, episode: n });
-    } catch (error) {
-      throw new Error(`\u7B2C ${n} \u96C6\u64AD\u653E\u5730\u5740\u89E3\u6790\u5931\u8D25\uFF1A${error.message || "\u672A\u77E5\u9519\u8BEF"}`);
-    }
-    const source = String(data && data.source || "");
-    if (!/^https?:\/\//i.test(source)) {
-      throw new Error(`\u7B2C ${n} \u96C6\u6CA1\u6709\u62FF\u5230\u6709\u6548\u7684\u64AD\u653E\u5730\u5740\uFF08${source.slice(0, 40) || "\u4E3A\u7A7A"}\uFF09\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5`);
-    }
-    resolved.push({ index: n, url: source, key: data.key || "" });
+    if (!privateNow && meta && meta.url) { direct.set(n, { index: n, url: meta.url, key: "" }); bump(); }
+    else pending.push(n);
   }
-  for (const j of hgJobs) {
-    let data;
+  // 有限并发 + 单集超时：个别集取不到只跳过这一集并汇总告知，不让整批白等
+  const fetched = await mapWithDownloadLimit(pending, DOWNLOAD_RESOLVE_CONCURRENCY, async (n) => {
+    let item = null;
     try {
-      data = await j.p;
+      const data = await withTimeout(api("episode", { id: state.detail.id, episode: n }), DOWNLOAD_RESOLVE_TIMEOUT_MS);
+      const source = String(data && data.source || "");
+      if (!/^https?:\/\//i.test(source)) throw new Error("播放地址为空或无效");
+      item = { index: n, url: source, key: privateNow ? "" : (data.key || "") };
     } catch (error) {
-      throw new Error(`\u7B2C ${j.n} \u96C6\u64AD\u653E\u5730\u5740\u89E3\u6790\u5931\u8D25\uFF1A${error.message || "\u672A\u77E5\u9519\u8BEF"}`);
+      failed.push(n);
+      console.warn(`[dl] 第 ${n} 集跳过：${error.message || "取流失败"}`);
     }
-    const source = String(data && data.source || "");
-    if (!/^https?:\/\//i.test(source)) throw new Error(`\u7B2C ${j.n} \u96C6\u6CA1\u6709\u62FF\u5230\u6709\u6548\u7684\u64AD\u653E\u5730\u5740\uFF08${source.slice(0, 40) || "\u4E3A\u7A7A"}\uFF09\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5`);
-    resolved.push({ index: j.n, url: source, key: "" });
-  }
-  if (!resolved.length) throw new Error("\u6CA1\u6709\u53EF\u4E0B\u8F7D\u7684\u5206\u96C6");
-  const bad = resolved.find((r) => !/^https?:\/\//i.test(String(r.url || "")));
-  if (bad) throw new Error(`\u7B2C ${bad.index} \u96C6\u64AD\u653E\u5730\u5740\u65E0\u6548\uFF0C\u5DF2\u53D6\u6D88\u63D0\u4EA4`);
-  return resolved;
+    bump();
+    return item;
+  });
+  const fetchedMap = new Map(fetched.filter(Boolean).map((item) => [item.index, item]));
+  const resolved = episodes.map((n) => direct.get(n) || fetchedMap.get(n)).filter(Boolean);
+  if (!resolved.length) throw new Error("所有分集都没能取到播放地址，请检查网络后重试");
+  return { items: resolved, failed };
 }
 async function submitDownloadTo(target, remoteId) {
   var _a2, _b2;
@@ -1718,13 +1768,26 @@ async function submitDownloadTo(target, remoteId) {
     toast("\u8BF7\u5148\u9009\u62E9\u96C6\u6570", true);
     return;
   }
+  const job = ++downloadJobId;
+  downloadCancelled = false;
   downloadParsing = true;
-  downloadMode = "parsing";
-  renderDownloadSheet();
+  // NAS 只推集数、由后端自行取流，不需要在这里逐集解析，也就不用弹准备进度
+  const needsResolve = target !== "nas";
+  if (needsResolve) {
+    downloadMode = "parsing";
+    downloadProgress = { total: episodes.length, done: 0, stage: "正在获取播放地址" };
+    renderDownloadSheet();
+  }
+  const noteProgress = (done, total) => {
+    if (job !== downloadJobId || downloadCancelled) return;
+    downloadProgress.done = done;
+    downloadProgress.stage = done < total ? "正在获取播放地址" : "播放地址已备齐，正在开始下载…";
+    if (downloadMode === "parsing") updateDownloadParsing();
+  };
   try {
     if (target === "nas") {
       await api("nas-download-start", { source: contentSource, title: state.detail.title, seriesId: String(state.detail.seriesId || state.detail.id), episodes, cover: state.detail.cover || "" });
-      toast("\u5DF2\u63D0\u4EA4 NAS \u4E0B\u8F7D\u4EFB\u52A1\uFF08\u540E\u7AEF\u81EA\u884C\u89E3\u6790\u53D6\u6D41\uFF09");
+      toast(`已提交 ${episodes.length} 集到 NAS，可在「我的下载」查看进度`);
     } else {
       let sourceNow = String(((_a2 = state.detail) == null ? void 0 : _a2.source) || "");
       if (sourceNow !== "huangguo" && sourceNow !== "hongguo") {
@@ -1743,20 +1806,31 @@ async function submitDownloadTo(target, remoteId) {
       }
       console.log(`[dl-judge] source=${sourceNow} proxyMode=${proxyModeNow} role=${(_b2 = state.account) == null ? void 0 : _b2.role} remote=${remoteId || "-"}`);
       {
-        const resolved = await resolveEpisodesForDownload(episodes);
-        if (!resolved.length) throw new Error("\u6CA1\u6709\u53EF\u4E0B\u8F7D\u7684\u5206\u96C6");
+        const { items: resolved, failed } = await resolveEpisodesForDownload(episodes, noteProgress);
+        if (downloadCancelled || job !== downloadJobId) {
+          if (job === downloadJobId) hideDownloadSheet();  // 别把已经开始的新一批弹层关掉
+          return;
+        }
         const debug = target === "phone-debug";
         const targetRemote = target === "remote" ? String(remoteId || "") : "";
+        const skipNote = failed.length
+          ? `；另有 ${failed.length} 集未取到地址已跳过（第 ${failed.slice(0, 5).join("、")}${failed.length > 5 ? " 等" : ""} 集），可稍后单独重试`
+          : "";
         await api("download-start", { source: sourceNow, title: state.detail.title, episodes: resolved, debug, cover: state.detail.cover || "", remoteId: targetRemote });
-        toast(debug ? `\u8C03\u8BD5\u6A21\u5F0F\u5DF2\u5F00\u59CB\uFF08${resolved.length} \u96C6\uFF09\uFF1A\u5206\u7247\u4E0B\u5B8C\u540E\u4F1A\u5BFC\u51FA\u300C\u7B2CNN\u96C6_\u8C03\u8BD5\u5305.zip\u300D\u5230 Download/Veyra/${state.detail.title}` : targetRemote ? `\u5DF2\u5F00\u59CB\u4E0B\u8F7D ${resolved.length} \u96C6` : `\u5224\u5B9A[\u6E90=${sourceNow} \u901A\u9053=${proxyModeNow}] \u5DF2\u5F00\u59CB\u4E0B\u8F7D\u5230\u624B\u673A\uFF08\u624B\u673A\u7ECF\u4EE3\u7406\u62C9\u6E90\u5408\u5E76\uFF09`);
+        toast(debug
+          ? `调试模式已开始（${resolved.length} 集），分片下完会导出调试包${skipNote}`
+          : targetRemote
+            ? `已开始下载 ${resolved.length} 集，完成后会自动上传到服务器${skipNote}`
+            : `已开始下载 ${resolved.length} 集，可在「我的下载」查看进度${skipNote}`);
       }
     }
     hideDownloadSheet();
   } catch (error) {
     downloadParsing = false;
+    if (downloadCancelled || job !== downloadJobId) return;   // 主动取消 / 已被新批次取代：不弹错、不动弹层
     downloadMode = "target";
     renderDownloadSheet();
-    toast(`${target === "nas" ? "\u63D0\u4EA4\u5931\u8D25" : "\u4E0B\u8F7D\u5931\u8D25"}\uFF1A${error.message}`, true);
+    toast(`${target === "nas" ? "\u63D0\u4EA4\u5931\u8D25" : "\u4E0B\u8F7D\u5931\u8D25"}\uFF1A${error.message}，可返回重试`, true);
   }
 }
 function renderSettings() {
@@ -2437,11 +2511,14 @@ function renderListing() {
   }
   const tagName = String(listing.label || listing.slug).replace(/^#+/, "");
   const tagTitle = privateMode() ? `#${tagName}` : `${((_a2 = listing.slug) == null ? void 0 : _a2.startsWith("comic:")) ? "\u6F2B\u5267" : "\u77ED\u5267"} \xB7 ${tagName}`;
-  const title = listing.kind === "tag-list" ? tagTitle : listing.kind === "recommend" ? "\u7CBE\u9009\u63A8\u8350" : privateMode() ? "\u6700\u8FD1\u4E0A\u65B0" : "\u70ED\u95E8\u6F2B\u5267";
-  const backLabel = listing.kind === "tag-list" && ((_b2 = state.listingReturn) == null ? void 0 : _b2.route) === "tags" ? "\u8FD4\u56DE\u5168\u90E8\u7C7B\u578B" : "\u8FD4\u56DE\u9996\u9875";
+  const rankNote = listing.kind === "rank-board"
+    ? ({ latest: "按上架时间从新到旧", hot: "红果官方综合热度榜", collect: "按红果官方公布的收藏数排序" }[listing.rankKind] || "")
+    : "";
+  const title = listing.kind === "rank-board" ? `《${tagName}》` : listing.kind === "tag-list" ? tagTitle : listing.kind === "recommend" ? "\u7CBE\u9009\u63A8\u8350" : privateMode() ? "\u6700\u8FD1\u4E0A\u65B0" : "\u70ED\u95E8\u6F2B\u5267";
+  const backLabel = (listing.kind === "tag-list" || listing.kind === "rank-board") && ((_b2 = state.listingReturn) == null ? void 0 : _b2.route) === "tags" ? "\u8FD4\u56DE\u5168\u90E8\u7C7B\u578B" : "\u8FD4\u56DE\u9996\u9875";
   content.innerHTML = `<div class="listing-page"><button class="listing-back" type="button" data-back="1">${icon("back")} ${backLabel}</button>
-    <h1>${esc(title)}</h1><p>\u5DF2\u663E\u793A ${listing.items.length} \u90E8\u4F5C\u54C1</p>
-    ${listing.items.length ? `<div class="search-grid listing-grid">${listing.items.map(itemCard).join("")}</div>` : '<div class="empty-state">\u8FD9\u4E2A\u6807\u7B7E\u4E0B\u6682\u65E0\u4F5C\u54C1</div>'}
+    <h1>${esc(title)}</h1><p>已显示 ${listing.items.length} 部作品${rankNote ? ` · ${esc(rankNote)}` : ""}</p>
+    ${listing.items.length ? `<div class="search-grid listing-grid">${listing.items.map(itemCard).join("")}</div>` : `<div class="empty-state">${listing.kind === "rank-board" ? "榜单暂时无法加载" : "这个标签下暂无作品"}</div>`}
     <div class="listing-footer">${listingFooter()}</div></div>`;
   hydrateImages();
   observeListingEnd();
@@ -2621,7 +2698,8 @@ function backDestination() {
   if (state.route === "downloads") return ((_d2 = state.settingsReturn) == null ? void 0 : _d2.route) || "settings";
   if (state.route === "settings") return ((_e = state.settingsReturn) == null ? void 0 : _e.route) || "library";
   if (state.route === "tags") return ((_f = state.tagsReturn) == null ? void 0 : _f.route) || "home";
-  if (state.route === "listing" && ((_g = state.listing) == null ? void 0 : _g.kind) === "tag-list") return ((_h = state.listingReturn) == null ? void 0 : _h.route) || "home";
+  const listingKind = (_g = state.listing) == null ? void 0 : _g.kind;
+  if (state.route === "listing" && (listingKind === "tag-list" || listingKind === "rank-board")) return ((_h = state.listingReturn) == null ? void 0 : _h.route) || "home";
   return state.route === "home" ? null : "home";
 }
 let bingePreviewClass = false;
@@ -2888,6 +2966,39 @@ async function goTag(slug, label) {
     }
   }
 }
+/* 三个排序类别：一次拿到官方榜单前 3 页并排好序，列表页复用现有卡片布局。 */
+async function goRankBoard(kind, label) {
+  const token = ++routeToken;
+  if (state.route !== "listing") state.listingReturn = captureScreen();
+  listingObserver == null ? void 0 : listingObserver.disconnect();
+  setRoute("listing");
+  state.tab = "home";
+  setNav("home");
+  searchInput.value = `#${label}`;
+  state.listing = {
+    items: [], nextPage: null, kind: "rank-board", rankKind: kind, label,
+    refreshing: true, loading: false, error: false
+  };
+  renderListing();
+  try {
+    const fresh = await api("rank-sorted", { kind });
+    if (token !== routeToken) return;
+    const items = asArray(fresh.items).map((item) => ({
+      ...item,
+      infoOverride: kind === "collect" ? (item.collectText || `${item.collect || 0}万收藏`) : (item.heat || "官方综合热度")
+    }));
+    state.listing = {
+      ...fresh, items, kind: "rank-board", rankKind: kind, label,
+      refreshing: false, loading: false, error: false
+    };
+    renderListing();
+  } catch (error) {
+    if (token !== routeToken) return;
+    state.listing.refreshing = false;
+    renderError(error, "rank-board");
+  }
+}
+
 async function goTagQuery(query) {
   var _a2, _b2;
   const name = query.replace(/^[#＃]\s*/, "").trim();
@@ -3343,7 +3454,8 @@ window.hgBack = () => {
     else returnFromDetail();
     return true;
   }
-  if (state.route === "listing" && ((_a2 = state.listing) == null ? void 0 : _a2.kind) === "tag-list") {
+  const _rankBackKind = (_a2 = state.listing) == null ? void 0 : _a2.kind;
+  if (state.route === "listing" && (_rankBackKind === "tag-list" || _rankBackKind === "rank-board")) {
     restoreScreen(state.listingReturn);
     return true;
   }
@@ -4450,13 +4562,6 @@ document.addEventListener("click", async (event) => {
     closeRemotePicker();
     return;
   }
-  if (event.target.closest("[data-dl-transfer]")) {
-    const button = event.target.closest("[data-dl-transfer]");
-    const head = button.closest(".download-task");
-    const title = head ? (head.querySelector(".download-task-head strong") || {}).textContent : "";
-    openRemotePicker(button.dataset.dlTransfer, title);
-    return;
-  }
   if (event.target.closest("[data-dl-transfer-cancel]")) {
     const id = event.target.closest("[data-dl-transfer-cancel]").dataset.dlTransferCancel;
     api("remote-transfer-cancel", { id }).then(() => {
@@ -4505,6 +4610,10 @@ document.addEventListener("click", async (event) => {
   if (event.target.closest("[data-dl-back-target]")) {
     downloadMode = "target";
     renderDownloadSheet();
+    return;
+  }
+  if (event.target.closest("[data-dl-cancel-parse]")) {
+    cancelDownloadParsing();
     return;
   }
   if (event.target.closest("[data-dl-back]")) {
@@ -4585,7 +4694,7 @@ document.addEventListener("click", async (event) => {
     const kind = button.dataset.dlMerge, id = button.dataset.dlId;
     const action = kind === "nas" ? "nas-download-merge" : "download-merge";
     api(action, { id }).then(() => {
-      toast("\u5DF2\u5F00\u59CB\u5408\u5E76");
+      toast("\u6B63\u5728\u628A\u5206\u96C6\u5408\u5E76\u6210 1 \u4E2A\u5B8C\u6574\u89C6\u9891\u2026");
       refreshCurrentDownloads();
     }).catch((error) => toast(error.message, true));
     return;
@@ -4702,8 +4811,13 @@ document.addEventListener("click", async (event) => {
   const historyCard = event.target.closest("[data-history-id]");
   if (historyCard) {
     const id = historyCard.dataset.historyId;
+    const episode = Number(historyCard.dataset.historyEpisode || 1);
     if (historyCard.dataset.historyCompleted === "true") goDetail(id, historyCard);
-    else goDetail(id).then(() => openPlayer(Number(historyCard.dataset.historyEpisode || 1)));
+    else {
+      // 列表点「继续看」时先让原生端把取流跑起来，别等详情页这一圈网络走完才开始
+      api("prewarm", { id, episode }).catch(() => {});
+      goDetail(id).then(() => openPlayer(episode));
+    }
     return;
   }
   if (event.target.closest("[data-all-tags]")) {
@@ -4713,6 +4827,11 @@ document.addEventListener("click", async (event) => {
   const tagChoice = event.target.closest("[data-tag-slug]");
   if (tagChoice) {
     goTag(tagChoice.dataset.tagSlug, tagChoice.dataset.tagName);
+    return;
+  }
+  const rankChoice = event.target.closest("[data-rank-kind]");
+  if (rankChoice) {
+    goRankBoard(rankChoice.dataset.rankKind, rankChoice.dataset.rankName);
     return;
   }
   const sub = event.target.closest("[data-sub]");
@@ -4790,6 +4909,7 @@ document.addEventListener("click", async (event) => {
     else if (retry.dataset.retry === "listing") openListing(state.listing.kind);
     else if (retry.dataset.retry === "tags") goTags();
     else if (retry.dataset.retry === "tag-list") goTag(state.listing.slug, state.listing.label);
+    else if (retry.dataset.retry === "rank-board") goRankBoard(state.listing.rankKind, state.listing.label);
     else if (retry.dataset.retry === "detail") goDetail(state.sourceItem.id);
     return;
   }
