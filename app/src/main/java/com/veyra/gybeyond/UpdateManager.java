@@ -39,7 +39,16 @@ final class UpdateManager {
     private static final Pattern VERSION = Pattern.compile("\\d+\\.\\d+\\.\\d+");
     /** 附件名里单独出现的 tv 记号：Veyra-TV-0.24.3.apk / veyra.tv.apk / veyra_tv_x.apk 都算。 */
     private static final Pattern TV_MARK = Pattern.compile("(?i)(^|[-_.])tv([-_.]|$)");
-    private static final long AUTO_INTERVAL_MS = 12 * 60 * 60 * 1000L;
+    /**
+     * 自动检查的「成功」窗口：4 小时。窗口内冷启动只读缓存、不打网络。
+     * 以前是 12 小时，等于一天最多问两次，发版当天大部分用户根本收不到提示。
+     */
+    private static final long AUTO_INTERVAL_MS = 4 * 60 * 60 * 1000L;
+    /**
+     * 自动检查「失败」后的冷却：10 分钟。失败绝不能占用 4 小时那个窗口
+     * （断网、服务器抽风都会把用户锁死在旧版本提示上），但也不该每次冷启动都连打三路接口。
+     */
+    private static final long AUTO_RETRY_MS = 10 * 60 * 1000L;
 
     interface Progress { void onPercent(int percent); }
 
@@ -49,6 +58,8 @@ final class UpdateManager {
     private final boolean tvBuild;
     private Candidate candidate;
     private boolean downloading;
+    /** 本轮检查是否真的从某个源拿到了权威结果：只有拿到才占用自动检查的成功窗口。 */
+    private boolean resolved;
 
     private static final class Candidate {
         String version;
@@ -171,22 +182,60 @@ final class UpdateManager {
 
     synchronized JSONObject check(boolean manual) throws Exception {
         long now = System.currentTimeMillis();
-        // 手动检查不设次数限制（旧版「1 小时最多 5 次」会在调试时被卡住）；
-        // 只有自动检查才走 12 小时间隔，避免每次冷启动都打 GitHub API。
+        // 手动检查永远真实联网（用户点了就必须给真结果），不设任何次数/间隔限制。
+        // 只有自动检查才走窗口：成功 4 小时、失败 10 分钟，两条时间线分开记，
+        // 免得一次断网就把「发现新版」的窗口占满，导致用户一整天收不到提示。
+        String local = context.getPackageManager()
+                .getPackageInfo(context.getPackageName(), 0).versionName;
         if (!manual) {
-            long last = preferences.getLong("last_auto_check", 0);
-            if (last > 0 && now >= last && now - last < AUTO_INTERVAL_MS) return cached();
-            preferences.edit().putLong("last_auto_check", now).apply();
+            long lastOk = preferences.getLong("last_auto_check", 0);
+            if (lastOk > 0 && now >= lastOk && now - lastOk < AUTO_INTERVAL_MS) {
+                return memoOrCurrent(local);
+            }
+            long lastTry = preferences.getLong("last_auto_try", 0);
+            if (lastTry > 0 && now >= lastTry && now - lastTry < AUTO_RETRY_MS) {
+                return memoOrCurrent(local);
+            }
         }
 
-        PackageInfo installed = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
-        String localVersion = installed.versionName;
+        resolved = false;
+        JSONObject result;
+        try {
+            result = resolve(local, manual);
+        } finally {
+            // 尝试时间每次都记：失败也退避 10 分钟，别反复打接口
+            if (!manual) preferences.edit().putLong("last_auto_try", now).apply();
+            // 成功窗口只在真的问到结果时才写。这是本次修复的核心：
+            // 旧代码在网络请求之前就写 last_auto_check，一次超时等于锁死 12 小时。
+            if (resolved) preferences.edit().putLong("last_auto_check", now).apply();
+        }
+        return result;
+    }
 
+    /**
+     * 被自动检查窗口挡住时的返回：有存量候选就原样交回（保住界面上的红点），
+     * 缓存已经被判定失效就回 current（让界面把角标清掉），其余一律 skipped。
+     *
+     * <p>关键点是不能回 none：「none」在界面上表示「什么都没有」，
+     * 会把冷启动靠缓存点亮的红点顺手抹掉，用户就再也看不到更新提示了。
+     */
+    private JSONObject memoOrCurrent(String localVersion) throws Exception {
+        JSONObject memo = cached();
+        if ("available".equals(memo.optString("status"))) return memo;
+        if (preferences.getString("available_manifest", null) == null) {
+            return status("current").put("version", localVersion);
+        }
+        return status("skipped").put("version", localVersion);
+    }
+
+    /** 真正去三个源里问一次。调用方负责记录窗口时间，这里只管拿结果。 */
+    private JSONObject resolve(String localVersion, boolean manual) throws Exception {
         // 静态源优先：自己的 nginx 托管 /update/latest.json，是唯一权威来源。
         // 静态源有结果就直接返回，不再问后端、也不回退 GitHub：
         // 三条腿的版本号可能不同步，混着用容易出现"提示更新到旧版"这种怪事。
         JSONObject viaStatic = tryStatic();
         if (viaStatic != null) {
+            resolved = true;
             if (!isNewer(viaStatic.optString("versionName"), localVersion)) {
                 clearCandidate();
                 return status("current").put("version", localVersion);
@@ -207,12 +256,14 @@ final class UpdateManager {
         if (viaServer != null) {
             String serverState = viaServer.optString("status");
             if ("current".equals(serverState)) {
+                resolved = true;
                 clearCandidate();
                 return status("current").put("version", localVersion);
             }
             if ("available".equals(serverState)) {
                 JSONObject manifest = manifestOfServer(viaServer);
                 if (manifest != null) {
+                    resolved = true;
                     candidate = candidateFrom(manifest);
                     preferences.edit().putString("available_manifest", manifest.toString()).apply();
                     return availableStatus(candidate, localVersion);
@@ -222,11 +273,13 @@ final class UpdateManager {
         }
 
         JSONObject release = fetchRelease();
-        if (manual) preferences.edit().putLong("last_auto_check", now).apply();
         if (release == null) {
             clearCandidate();
             return status("current").put("version", localVersion);
         }
+        // 只有真拿到 release 才算问到过；404（还没发过版）和网络异常都当「没结果」，
+        // 走 10 分钟退避重试，不占用 4 小时窗口
+        resolved = true;
         String tag = release.optString("tag_name", "");
         String version = tag.replaceFirst("^[vV]", "");
         JSONObject asset = pickAsset(release);

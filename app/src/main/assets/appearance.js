@@ -73,6 +73,11 @@
     root.dataset.material = state.material;
     root.dataset.color = state.color;
     root.dataset.corner = state.corner;
+    // WebView < 111 不认识 color-mix()（Android 8~12 的原厂内核常停在这），材质层与彩色背景整片失效：
+    // 弹窗背板变透明、彩色背景退回深色底但文字仍是浅色主题的深字，整页看不清。
+    // 这里只在浏览器确实不支持时打标记，支持的真机不匹配任何降级规则，观感零变化。
+    root.dataset.cmx = (window.CSS && window.CSS.supports &&
+      window.CSS.supports('color', 'color-mix(in srgb, red, blue)')) ? 'yes' : 'no';
 
     var spec = state.specular / 100;
     root.style.setProperty('--glass-blur', state.blur.toFixed(1) + 'px');

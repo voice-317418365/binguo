@@ -452,11 +452,41 @@ function setAvailableUpdate(result) {
   updateAvailable = result?.status === 'available' ? result : null;
   updatePendingVersion = updateAvailable ? String(updateAvailable.version || '') : '';
   headerSettings.classList.toggle('has-update', Boolean(updateAvailable));
+  // 底部「我的」也点一颗红点：头部设置图标在刷剧页/全屏播放时根本看不见，
+  // 「我的」是常驻入口，红点放这儿才不会漏。电视版没有 #dock，取不到就跳过。
+  const dockMine = document.querySelector('#dock [data-nav="library"]');
+  if (dockMine) {
+    dockMine.classList.toggle('has-update', Boolean(updateAvailable));
+    if (updateAvailable) dockMine.setAttribute('aria-label', `我的，发现新版本 ${updateAvailable.version}，查看更新`);
+    else dockMine.removeAttribute('aria-label');
+  }
   const versionButton = content.querySelector('.app-version');
   if (versionButton) {
     versionButton.classList.toggle('has-update', Boolean(updateAvailable));
     versionButton.setAttribute('aria-label', updateAvailable ? `当前版本 ${appVersion}，发现新版 ${updateAvailable.version}，查看更新` : `当前版本 ${appVersion}，检查更新`);
   }
+}
+
+/**
+ * 冷启动/自动检查发现新版：只给一条轻提示，不弹窗、不自动下载。
+ * 以前是「悄悄只点一个红点在设置图标上」，而那个图标在刷剧页压根不显示，
+ * 用户等于永远收不到通知；现在加一句 toast，同时把红点点到「我的」上。
+ * 同一个版本在一个进程里只提示一次，4 小时后的又一次自动检查不会再来一遍。
+ */
+let updateNotifiedVersion = '';
+const UPDATE_TOAST_DAY_KEY = 'veyra.update.toastDay';
+function notifyUpdateOnce(result) {
+  const version = String(result?.version || '');
+  if (!version || updateNotifiedVersion === version) return;
+  updateNotifiedVersion = version;
+  // 同一版本每天最多提醒一次：既保证「开 App 就能看到」，又不至于每次冷启动都来一句。
+  // 用户点了「取消」的版本在上面就被拦掉了，根本走不到这儿。
+  const stamp = `${version}@${new Date().toISOString().slice(0, 10)}`;
+  try {
+    if (localStorage.getItem(UPDATE_TOAST_DAY_KEY) === stamp) return;
+    localStorage.setItem(UPDATE_TOAST_DAY_KEY, stamp);
+  } catch (error) { /* 隐私模式写不了：那就每次冷启动提示一次，不算致命 */ }
+  toast(`发现新版本 ${version}，点「我的」查看更新`);
 }
 
 function showUpdate(result) {
@@ -492,11 +522,15 @@ async function checkUpdate(manual) {
       // 以前是悄悄下完 13MB 才弹窗，用户看到的是"还没告诉我就开始下载"，
       // 所以改成「点检查更新 → 弹窗 → 点立即下载」。
       if (manual) showUpdate(result);
+      else notifyUpdateOnce(result);
     } else if (result.status === 'current' || result.status === 'unpublished' || result.status === 'none') {
       setAvailableUpdate(null);
       if (manual && result.status === 'current') toast(`已是最新版本 ${result.version}`);
       if (manual && result.status === 'unpublished') toast('暂未发布更新包', true);
     }
+    // skipped：自动检查被 4 小时/10 分钟窗口挡住，用的是本地缓存结论。
+    // 这里什么都不做 —— 尤其不能调 setAvailableUpdate(null)，那会把已经亮着的红点抹掉。
+    else if (result.status === 'skipped') { /* 保持现状 */ }
     else if (result.status === 'channel-missing') {
       // 新版发了但这个渠道还没打包：不能说「已是最新」，也不能把别的渠道的包装上去
       setAvailableUpdate(null);
@@ -1585,7 +1619,10 @@ function downloadTaskRow(task, kind) {
   const deleteBtn = !running && !remoteKind ? `<button type="button" class="dl-cancel" data-dl-delete="${kind}" data-dl-id="${esc(task.id)}"${task.children && task.children.length > 1 ? ` data-dl-siblings="${esc(task.children.map(c => c.id).join(','))}"` : ''}>删除</button>` : '';
   const failedInfo = failedList.length > 0
     ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc('失败集: ' + failedList.map(f => '第' + f.index + '集(' + (f.error || '') + ')').join('；'))}" title="点击复制失败明细">失败 ${failedList.length} 集：${esc(failedList.slice(0, 3).map(f => '第' + f.index + '集').join('、'))}${failedList.length > 3 ? ' 等' : ''}</span>` : '';
-  const errLog = task.error || task.debug || '';
+  // 成功态（ready/done）不展示 debug 日志链接：合并成功时 debug 里仍有过程记录，
+  // 直接渲染会变成一条红色「复制合并日志」告警，让人误以为出错了。
+  const failedState = task.status === 'failed' || task.status === 'canceled';
+  const errLog = task.error || (failedState ? (task.debug || '') : '');
   const errBlock = errLog
     ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc(errLog.replace(/\n/g, '\\n'))}" title="点击复制全部日志">${task.error ? task.error.split('\n').slice(0, 4).map(esc).join('<br>') : '<span class="dl-log-link">复制合并日志</span>'}</span>` : '';
   const detailHint = task.detail && (/片/.test(task.detail) || task.detail.includes('合并中')) ? ` · <span class="dl-detail-hint">${esc(task.detail)}</span>` : '';
@@ -2228,7 +2265,7 @@ function buildAboutPopHtml() {
   return `<div class="appearance-pop account-pop about-pop" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <div class="appearance-head"><h2 id="about-title">关于彬果</h2><button type="button" class="appearance-close" data-about-close aria-label="关闭">✕</button></div>
     <div class="about-version" id="about-version">${version ? '版本 ' + esc(version) : '读取版本…'}</div>
-    <div class="about-actions"><button type="button" data-check-update>检查更新</button><button type="button" data-clear-cache>清除缓存<span class="about-cache-size" id="about-cache-size"></span></button></div>
+    <div class="about-actions"><button type="button" data-check-update>检查更新</button><button type="button" data-clear-cache>清除缓存<span class="about-cache-size" id="about-cache-size"></span></button><button type="button" data-clean-gallery>清理相册</button></div>
     <p class="appearance-note about-feedback">有任何建议或问题，欢迎发邮件到 <button type="button" class="settings-url" data-copy-text="317418365@qq.com">317418365@qq.com</button>，或在斗鱼私信「<button type="button" class="settings-url" data-copy-text="回收飞哥糕丸">回收飞哥糕丸</button>」。</p>
     <p class="appearance-note about-link">项目地址：<button type="button" class="settings-url" data-open-url="https://github.com/voice-317418365/binguo">github.com/voice-317418365/binguo</button></p>
     <div class="about-support">
@@ -2275,6 +2312,60 @@ async function clearAppCache() {
     toast((error && error.message) || '清理失败', true);
   }
 }
+/**
+ * 清理相册里旧版本留下的下载视频。
+ *
+ * 新下载不会再进相册（Download/Veyra 下放了 .nomedia），但老版本用
+ * scanner 扫进去的条目还在，而且是「扫描器」建的（owner 为空），
+ * 应用没有读权限时连查都查不到，只能用户点一次、由系统弹框批量删。
+ * 只删相册记录，文件本体不动，App 内播放和文件管理都不受影响。
+ */
+async function cleanGalleryOld() {
+  const tip = document.getElementById('about-cache-tip');
+  const say = text => { if (tip) tip.textContent = text; };
+  say('正在查找相册里的旧下载…');
+  try {
+    const reply = await api('clean-gallery');
+    const status = String(reply && reply.status || '');
+    if (status === 'need-permission') {
+      say('请允许访问相册后，再点一次「清理相册」');
+      toast('请允许访问相册后，再点一次「清理相册」', true);
+      return;
+    }
+    if (status === 'empty') {
+      say('相册里没有需要清理的下载');
+      toast('相册里没有需要清理的下载');
+      return;
+    }
+    if (status === 'confirm') {
+      say(`找到 ${reply.count} 个，请在系统弹框里点「允许」（只清相册记录，文件不删）`);
+      return;
+    }
+    if (status === 'blocked') {
+      say('有文件正被占用，暂时清不了，稍后再试');
+      toast('有文件正被占用，暂时清不了，稍后再试', true);
+      return;
+    }
+    if (status === 'done') {
+      const removed = Number(reply.removed) || 0;
+      say(`已清理 ${removed} 个相册记录，文件仍在「下载/Veyra」`);
+      toast(`已清理 ${removed} 个相册记录`);
+    }
+  } catch (error) {
+    say('清理失败');
+    toast((error && error.message) || '清理失败', true);
+  }
+}
+/** 系统「删除确认」框的回调（原生 onActivityResult 里调）。 */
+window.hgGalleryCleaned = ok => {
+  const tip = document.getElementById('about-cache-tip');
+  if (ok) {
+    if (tip) tip.textContent = '相册记录已清理，文件仍在「下载/Veyra」';
+    toast('相册记录已清理，文件仍在「下载/Veyra」');
+  } else if (tip) {
+    tip.textContent = '已取消清理';
+  }
+};
 function ensureAboutPop() {
   if (aboutPop && document.body.contains(aboutPop)) return aboutPop;
   aboutPop = document.createElement('div');
@@ -4603,6 +4694,7 @@ document.addEventListener('click', async event => {
   if (publicCategory) { goCategory(publicCategory.dataset.publicCategory); return; }
   if (event.target.closest('[data-return-public]')) { await api('leave-private'); location.reload(); return; }
   if (event.target.closest('[data-check-update]')) { checkUpdate(true); return; }
+  if (event.target.closest('[data-clean-gallery]')) { cleanGalleryOld(); return; }
   if (event.target.closest('[data-clear-cache]')) { clearAppCache(); return; }
   if (event.target.closest('[data-check-resources]')) {
     const button = event.target.closest('[data-check-resources]');

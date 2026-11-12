@@ -10,6 +10,13 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- 只给「关于 → 清理相册」用：老版本把下载的视频扫进了系统相册，那些条目是扫描器建的
+         （owner=NULL），没有读权限连查都查不到。新下载靠 Download/Veyra/.nomedia 就不入库，
+         完全不需要这条权限，弹框只在用户主动点「清理相册」时出现。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <!-- 扫码登录时要把二维码丢给红果 App 去扫，Android 11+ 不声明就查不到这个包 -->
     <queries>
         <package android:name="com.phoenix.read" />

@@ -572,11 +572,33 @@ function setAvailableUpdate(result) {
   updateAvailable = (result == null ? void 0 : result.status) === "available" ? result : null;
   updatePendingVersion = updateAvailable ? String(updateAvailable.version || "") : "";
   headerSettings.classList.toggle("has-update", Boolean(updateAvailable));
+  // 底部「我的」也点一颗红点（电视轻量包没有 #dock，取不到就跳过）
+  var dockMine = document.querySelector('#dock [data-nav="library"]');
+  if (dockMine) {
+    dockMine.classList.toggle("has-update", Boolean(updateAvailable));
+    if (updateAvailable) dockMine.setAttribute("aria-label", "\u6211\u7684\uFF0C\u53D1\u73B0\u65B0\u7248\u672C " + updateAvailable.version + "\uFF0C\u67E5\u770B\u66F4\u65B0");
+    else dockMine.removeAttribute("aria-label");
+  }
   const versionButton = content.querySelector(".app-version");
   if (versionButton) {
     versionButton.classList.toggle("has-update", Boolean(updateAvailable));
     versionButton.setAttribute("aria-label", updateAvailable ? `\u5F53\u524D\u7248\u672C ${appVersion}\uFF0C\u53D1\u73B0\u65B0\u7248 ${updateAvailable.version}\uFF0C\u67E5\u770B\u66F4\u65B0` : `\u5F53\u524D\u7248\u672C ${appVersion}\uFF0C\u68C0\u67E5\u66F4\u65B0`);
   }
+}
+let updateNotifiedVersion = "";
+const UPDATE_TOAST_DAY_KEY = "veyra.update.toastDay";
+function notifyUpdateOnce(result) {
+  const version = String((result == null ? void 0 : result.version) || "");
+  if (!version || updateNotifiedVersion === version) return;
+  updateNotifiedVersion = version;
+  // 同一版本每天最多提醒一次
+  const stamp = version + "@" + new Date().toISOString().slice(0, 10);
+  try {
+    if (localStorage.getItem(UPDATE_TOAST_DAY_KEY) === stamp) return;
+    localStorage.setItem(UPDATE_TOAST_DAY_KEY, stamp);
+  } catch (error) {
+  }
+  toast("\u53D1\u73B0\u65B0\u7248\u672C " + version + "\uFF0C\u70B9\u300C\u6211\u7684\u300D\u67E5\u770B\u66F4\u65B0");
 }
 function showUpdate(result) {
   document.getElementById("update-version").textContent = `\u5F53\u524D ${result.currentVersion} \xB7 \u65B0\u7248 ${result.version}`;
@@ -611,6 +633,7 @@ async function checkUpdate(manual) {
       setAvailableUpdate(result);
       // 只亮角标，不在后台静默下载：点检查更新 → 弹窗 → 点立即下载
       if (manual) showUpdate(result);
+      else notifyUpdateOnce(result);
     } else if (result.status === "current" || result.status === "unpublished" || result.status === "none") {
       setAvailableUpdate(null);
       if (manual && result.status === "current") toast(`\u5DF2\u662F\u6700\u65B0\u7248\u672C ${result.version}`);
@@ -1527,7 +1550,8 @@ function downloadTaskRow(task, kind) {
   const mergeHint = mergeBtn ? `<div class="dl-merge-hint">\u5DF2\u4E0B\u597D ${Number(task.doneCount) || 0} \u96C6\uFF0C\u6BCF\u96C6\u662F\u4E00\u4E2A\u5355\u72EC\u6587\u4EF6\uFF1B\u5408\u5E76\u540E\u53EA\u7559 1 \u4E2A\u5B8C\u6574 mp4\uFF0C\u65B9\u4FBF\u4E00\u6B21\u770B\u5B8C\u6216\u62F7\u8D70\u3002\u4E0D\u5408\u5E76\u4E5F\u80FD\u9010\u96C6\u64AD\u653E\u3002</div>` : "";
   const deleteBtn = !running && !remoteKind ? `<button type="button" class="dl-cancel" data-dl-delete="${kind}" data-dl-id="${esc(task.id)}"${task.children && task.children.length > 1 ? ` data-dl-siblings="${esc(task.children.map((c) => c.id).join(","))}"` : ""}>\u5220\u9664</button>` : "";
   const failedInfo = failedList.length > 0 ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc("\u5931\u8D25\u96C6: " + failedList.map((f) => "\u7B2C" + f.index + "\u96C6(" + (f.error || "") + ")").join("\uFF1B"))}" title="\u70B9\u51FB\u590D\u5236\u5931\u8D25\u660E\u7EC6">\u5931\u8D25 ${failedList.length} \u96C6\uFF1A${esc(failedList.slice(0, 3).map((f) => "\u7B2C" + f.index + "\u96C6").join("\u3001"))}${failedList.length > 3 ? " \u7B49" : ""}</span>` : "";
-  const errLog = task.error || task.debug || "";
+  const failedState = task.status === "failed" || task.status === "canceled";
+  const errLog = task.error || (failedState ? (task.debug || "") : "");
   const errBlock = errLog ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc(errLog.replace(/\n/g, "\\n"))}" title="\u70B9\u51FB\u590D\u5236\u5168\u90E8\u65E5\u5FD7">${task.error ? task.error.split("\n").slice(0, 4).map(esc).join("<br>") : '<span class="dl-log-link">\u590D\u5236\u5408\u5E76\u65E5\u5FD7</span>'}</span>` : "";
   const detailHint = task.detail && (/片/.test(task.detail) || task.detail.includes("\u5408\u5E76\u4E2D")) ? ` \xB7 <span class="dl-detail-hint">${esc(task.detail)}</span>` : "";
   const playAttr = kind === "nas" ? "data-dl-play-nas" : remoteKind ? "data-dl-play-device" : "data-dl-play";

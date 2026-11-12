@@ -128,7 +128,11 @@ final class HongguoRepository {
     /*
      * 播放地址缓存：同一集反复点开不该每次都重新签名取流（一次 resolve = 拼设备参数 +
      * 签名 + 一次 HTTPS 往返）。红果地址带时效，只留 8 分钟，过期重新解析。
-     * 注意：这里保留我方 RelayPlayback 取流链路，不引入上游的直连优先 resolveStream。
+     *
+     * 取流顺序对齐上游 0.28.15：本机签名直连优先，失败才落回 RelayPlayback。
+     * 我方 RelayPlayback 第一步是后端 /api/web/hongguo/stream，而后端要 spawn ffmpeg
+     * 把整集转封装完才 sendFile（一集几十秒，且只有同名临时文件存在时才快）；直连拿到
+     * 的是 CENC 密文，RemoteVideo 边读边解，地址到手就能出画，首播不用等转封装。
      */
     private static final long EPISODE_TTL_MS = 8 * 60 * 1000L;
     private static final LruCache<String, JSONObject> episodes = new LruCache<>(32);
@@ -142,7 +146,8 @@ final class HongguoRepository {
         Detail detail = details.get(id);
         if (detail == null) { detail = upstream.detail(id); details.put(id, detail); }
         if (number < 1 || number > detail.getEpisodes().size()) throw new IllegalArgumentException("无效集数");
-        StreamInfo info = upstream.stream(id, detail.getEpisodes().get(number - 1), 1080);
+        String vid = detail.getEpisodes().get(number - 1);
+        StreamInfo info = resolveStream(id, vid);
         HongguoPlayback.register(info);
         JSONObject result = new JSONObject().put("id", id).put("episode", number)
                 // vid 是这一集的视频 id，进度回传要用；顺手透出来省得播放器再查一次
@@ -159,6 +164,51 @@ final class HongguoRepository {
         episodes.put(cacheKey, result);
         episodeAt.put(cacheKey, System.currentTimeMillis());
         return result;
+    }
+
+    /*
+     * 直连优先取流（对齐上游 0.28.15 的 resolveStream）。
+     *
+     * HongguoSigner 在本机完成 device_register + X-Argus/X-Ladon/X-Gorgon 签名，直接拿
+     * fqnovel 的 CDN 直链（CENC 密文），地址到手就能出画，首播不用等后端转封装。
+     *
+     * 放到独立线程里做是为了给「空响应风控」设 6 秒上限：签名器内部本身有重试与换设备
+     * 轮换，风控时可能拖到十几秒，不能让它卡住详情页/播放页的请求线程。
+     * 连续两次失败就冷却 5 分钟、期间直接走后端，避免每一集都白等 6 秒。
+     */
+    private static final java.util.concurrent.ExecutorService RESOLVE_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(3, runnable -> {
+                Thread thread = new Thread(runnable, "hongguo-resolve");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private static final java.util.concurrent.atomic.AtomicInteger DIRECT_MISSES =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static volatile long directHoldUntil = 0L;
+    private static final long DIRECT_COOLDOWN_MS = 5 * 60 * 1000L;
+    private static final long DIRECT_TIMEOUT_MS = 6000L;
+
+    private StreamInfo resolveStream(String id, String vid) throws Exception {
+        if (System.currentTimeMillis() >= directHoldUntil) {
+            java.util.concurrent.Callable<StreamInfo> call =
+                    () -> com.hongguotv.core.HongguoSigner.INSTANCE.resolve(vid);
+            java.util.concurrent.Future<StreamInfo> task = RESOLVE_POOL.submit(call);
+            try {
+                StreamInfo direct = task.get(DIRECT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (direct != null && direct.getUrl() != null && direct.getUrl().startsWith("http")) {
+                    DIRECT_MISSES.set(0);
+                    return direct;
+                }
+            } catch (Exception error) {
+                task.cancel(true);
+                // 第一次失败不立刻判死：偶发空响应重试一次还是很快的
+                if (DIRECT_MISSES.incrementAndGet() >= 2) {
+                    directHoldUntil = System.currentTimeMillis() + DIRECT_COOLDOWN_MS;
+                    DIRECT_MISSES.set(0);
+                }
+            }
+        }
+        return upstream.stream(id, vid, 1080);
     }
 
     /*

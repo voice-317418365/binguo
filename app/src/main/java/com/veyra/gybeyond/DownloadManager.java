@@ -83,6 +83,8 @@ final class DownloadManager {
                 .build();
         persistLoaded = loadPersisted();
         sweepOrphans();
+        // 相册隔离：尽早放 .nomedia（老用户相册里的旧条目也顺手清一次）
+        try { ensureGalleryHidden(); } catch (Exception ignored) { }
     }
 
     /** loadPersisted 是否成功恢复（false = 记录文件损坏，孤儿清理被跳过） */
@@ -330,8 +332,7 @@ final class DownloadManager {
                 }
                 if (f.renameTo(official)) {  // MediaStore 改不动就退回 File 改名，再补一次扫描
                     deletePublicFile(rel, f.getName());
-                    MediaScannerConnection.scanFile(context, new String[]{official.getAbsolutePath()},
-                            new String[]{"video/mp4"}, null);
+                    // 不再以 video/mp4 扫入媒体库（会进相册）；DIRECTORY_DOWNLOADS/Veyra 已有 .nomedia
                     hasOfficial = true;
                 }
             }
@@ -973,9 +974,7 @@ final class DownloadManager {
                 if (attempt > 0) {
                     if (task.canceled) return;
                     try { Thread.sleep(attempt <= 2 ? 400 : 900); } catch (InterruptedException ignored) { }
-                    try {
-                        MediaScannerConnection.scanFile(context, new String[]{edir.getAbsolutePath()}, null, null);
-                    } catch (Exception ignored) { }
+                    // 不再扫描目录：成品不进媒体库（相册），改名也不再依赖 MediaStore
                 }
                 normalizeEpisodeNames(edir);
                 named = episodeFilesIn(edir);
@@ -2315,6 +2314,80 @@ final class DownloadManager {
      *  用媒体序列号（mediaSeq+i 大端 16B）。输入仅依赖本地 work 目录：从 play.m3u8 自解析
      *  分片/KEY/IV/序列号，完全不需要源站，分片早已下载好时（合并失败重试）直接合并。
      *  成功后删明文 ts；失败保留可重试。 */
+    /**
+     * 单集合并：TS 串流优先 → 逐片 concat → 系统 muxer。
+     *
+     * <p>为什么优先「串流」：HLS 的每个分片都是一个独立 TS 文件，逐片 concat 时 concat demuxer
+     * 会在每片起点重新对齐时间戳，native 封包循环再对非单调 dts 做 +1 修正，于是每个片边界
+     * 都挤掉一帧（或留一个空隙）。一集 2 分钟有 40+ 个片边界，累积起来就是「播放一顿一顿」，
+     * 边界处还会因为参考帧错位出现花屏。MPEG-TS 本身支持字节级串联（每片都重复 PAT/PMT，
+     * ffmpeg 的 mpegts demuxer 会当成一条连续的流解析），把分片先拼成一个 full.ts 再整体
+     * 重封装，时间轴就回到源编码器原本那一条，片边界彻底消失。
+     */
+    private static void mergeSegments(File[] decFiles, File out, String tag, StringBuilder dbg, File nativeLog)
+            throws Exception {
+        boolean merged = false;
+        File fullTs = null;
+        try {
+            try {
+                fullTs = new File(out.getParentFile(), "full.ts");
+                concatenate(decFiles, fullTs);
+                dbg.append("TS 串流合并 ").append(decFiles.length).append(" 片 → ")
+                        .append(fullTs.length() / 1024).append("KB\n");
+                // 必须先删掉旧产物：native 侧是「存在即不覆盖」的打开方式，重试时残留的
+                // 上一次（可能是黑屏的）成品会让 native 直接失败并回退到 muxer，问题被掩盖。
+                if (out.exists() && !out.delete()) dbg.append("警告：旧产物删不掉，继续尝试合并\n");
+                FFmpegConcat.concat(java.util.Collections.singletonList(fullTs), null, out, tag, dbg, nativeLog);
+                // 画面自检：容器合法、时长正确但画面全黑，是「stsd 写了 avc3」这类问题的典型形态，
+                // 只查容器查不出来，必须真的解一帧看。
+                if (checkPicture(out, dbg) == 2)
+                    throw new java.io.IOException("产物抽帧全是纯色/全黑（打开会黑屏）");
+                merged = true;
+            } catch (Throwable streamErr) {
+                dbg.append("TS 串流合并失败：").append(streamErr).append("，回退逐片 concat\n");
+                if (out.exists()) out.delete();
+            }
+            if (!merged) {
+                try {
+                    dbg.append("libffconcat（FFmpeg concat）按片合并 ").append(decFiles.length).append(" 片…\n");
+                    FFmpegConcat.concat(java.util.Arrays.asList(decFiles), null, out, tag, dbg, nativeLog);
+                    if (checkPicture(out, dbg) == 2)
+                        throw new java.io.IOException("产物抽帧全是纯色/全黑（打开会黑屏）");
+                    merged = true;
+                } catch (Throwable natErr) {
+                    dbg.append("libffconcat 按片合并失败：").append(natErr).append('\n');
+                    if (out.exists()) out.delete();
+                }
+            }
+            if (!merged) {
+                // 兜底：native 库加载不了 / 崩溃时才走这条路。注意它对「3 字节起始码的 TS」会产黑屏，
+                // 所以必须再过一遍 verify（视频轨时长 ≤ 0 直接判失败，不让坏文件落盘）
+                dbg.append("回退系统 muxer 合并 ").append(decFiles.length).append(" 片…\n");
+                concatTsByMuxer(decFiles, out, dbg);
+                FFmpegConcat.verify(out, java.util.Arrays.asList(decFiles), dbg);
+                if (checkPicture(out, dbg) == 2)
+                    throw new java.io.IOException("回退 muxer 合并后抽帧仍是纯色/全黑（打开会黑屏）");
+            }
+        } finally {
+            if (fullTs != null) fullTs.delete();
+        }
+    }
+
+    /** 按顺序把多个文件字节拼接成一个（TS 分片串流用）。 */
+    private static void concatenate(File[] parts, File out) throws Exception {
+        try (java.io.OutputStream os = new java.io.BufferedOutputStream(
+                new java.io.FileOutputStream(out), 1 << 20)) {
+            byte[] buf = new byte[1 << 20];
+            for (File f : parts) {
+                if (f == null || !f.isFile()) continue;
+                try (java.io.InputStream is = new java.io.FileInputStream(f)) {
+                    int n;
+                    while ((n = is.read(buf)) > 0) os.write(buf, 0, n);
+                }
+            }
+        }
+    }
+
     private static void mergeTsToMp4(File work, File out, StringBuilder dbg) throws Exception {
         long t0 = System.currentTimeMillis();
         dbg.append("方案2：Cipher 解密 + FFmpeg concat 合并\n");
@@ -2433,31 +2506,7 @@ final class DownloadManager {
         } catch (Exception ignored) {}
         File nativeLog = new File(work, "native-concat.log");
         try {
-            boolean merged = false;
-            try {
-                dbg.append("libffconcat（FFmpeg concat）合并 ").append(decFiles.length).append(" 片…\n");
-                // 必须先删掉旧产物：native 侧是「存在即不覆盖」的打开方式，重试时残留的
-                // 上一次（可能是黑屏的）成品会让 native 直接失败并回退到 muxer，问题被掩盖。
-                if (out.exists() && !out.delete()) dbg.append("警告：旧产物删不掉，继续尝试合并\n");
-                FFmpegConcat.concat(java.util.Arrays.asList(decFiles), null, out, tag, dbg, nativeLog);
-                // 画面自检：容器合法、时长正确但画面全黑，是「stsd 写了 avc3」这类问题的典型形态，
-                // 只查容器查不出来，必须真的解一帧看。确定黑屏就删掉产物走 muxer 兜底。
-                if (checkPicture(out, dbg) == 2)
-                    throw new java.io.IOException("产物抽帧全是纯色/全黑（打开会黑屏）");
-                merged = true;
-            } catch (Throwable natErr) {
-                dbg.append("libffconcat 合并失败：").append(natErr).append('\n');
-                if (out.exists()) out.delete();
-            }
-            if (!merged) {
-                // 兜底：native 库加载不了 / 崩溃时才走这条路。注意它对「3 字节起始码的 TS」会产黑屏，
-                // 所以必须再过一遍 verify（视频轨时长 ≤ 0 直接判失败，不让坏文件落盘）
-                dbg.append("回退系统 muxer 合并 ").append(decFiles.length).append(" 片…\n");
-                concatTsByMuxer(decFiles, out, dbg);
-                FFmpegConcat.verify(out, java.util.Arrays.asList(decFiles), dbg);
-                if (checkPicture(out, dbg) == 2)
-                    throw new java.io.IOException("回退 muxer 合并后抽帧仍是纯色/全黑（打开会黑屏）");
-            }
+            mergeSegments(decFiles, out, tag, dbg, nativeLog);
             dbg.append("合并完成 ").append(out.length()).append("B 耗时 ").append((System.currentTimeMillis() - t0) / 1000).append("s\n");
         } finally {
             // 明文分片是临时文件（每片 2~3MB，165 片就是几百 MB），无论成败都清掉
@@ -3052,17 +3101,44 @@ final class DownloadManager {
                     }
                     plainKeys.add("");
                 }
-                stage = "libffconcat 合并多集";
-                debug.append("libffconcat（FFmpeg concat）合并 ").append(plainInputs.size()).append(" 集…\n");
-                if (output.exists()) output.delete();   // native 侧「存在即不覆盖」，残片会让它直接失败
-                FFmpegConcat.concat(plainInputs, plainKeys, output, tag, debug, nativeLog);
-                stage = "校验产物";
-                FFmpegConcat.verify(output, plainInputs, debug);
-                if (checkPicture(output, debug) == 2)
-                    throw new java.io.IOException("产物抽帧全是纯色/全黑（打开会黑屏）");
-                ok = true;
+                // 主引擎：纯 Java 容器级 remux。
+                // 为什么不用 libffconcat：实测它对「多个 mp4 分集」产出的视频 stts 是
+                // (15,9),(1,57465) 循环（每 GOP 里 15 帧被压成 100µs、剩 1 帧吃 640ms），
+                // 容器时长/帧数都对但呈现时间轴被打乱 → 播放每 0.64s 只出一帧，观感「非常卡」，
+                // 衔接处参考帧错位还会花屏。Java 版直接搬样本、重建 stbl 时间表，
+                // 输出与 ffmpeg CLI（-f concat -c copy）逐项对齐，B 帧 ctts 完整保留。
+                stage = "Java MP4 拼接";
+                debug.append("Java MP4 拼接（容器 remux）").append(plainInputs.size()).append(" 集…\n");
+                if (output.exists()) output.delete();
+                try {
+                    Mp4Concat.concat(plainInputs, output, debug);
+                    stage = "校验产物";
+                    FFmpegConcat.verify(output, plainInputs, debug);
+                    if (checkPicture(output, debug) == 2)
+                        throw new java.io.IOException("产物抽帧全是纯色/全黑（打开会黑屏）");
+                    ok = true;
+                } catch (Mp4Concat.Unsupported unsupported) {
+                    debug.append("Java 拼接不受支持：").append(unsupported.getMessage()).append('\n');
+                    if (output.exists()) output.delete();
+                    // 画幅/编码/轨数不一致：换 libffconcat 硬拼只会更糟（比例失真 + 花屏），
+                    // 直接放弃合并，交给外层「按集导出」并把原因写到卡片上。
+                    if (unsupported.fatal) throw unsupported;
+                    // 否则只是本解析器读不懂结构 → 继续下面的老引擎兜底
+                    stage = "libffconcat 合并多集（兜底）";
+                    debug.append("回退 libffconcat…\n");
+                    FFmpegConcat.concat(plainInputs, plainKeys, output, tag, debug, nativeLog);
+                    FFmpegConcat.verify(output, plainInputs, debug);
+                    if (checkPicture(output, debug) == 2)
+                        throw new java.io.IOException("产物抽帧全是纯色/全黑（打开会黑屏）");
+                    ok = true;
+                } catch (Throwable javaErr) {
+                    debug.append("Java 拼接失败：").append(javaErr.getMessage()).append('\n');
+                    if (output.exists()) output.delete();
+                    throw javaErr;
+                }
             } catch (Throwable e1) {
-                debug.append("libffconcat 合并失败：").append(e1.getMessage()).append('\n');
+                if (e1 instanceof Mp4Concat.Unsupported && ((Mp4Concat.Unsupported) e1).fatal) throw e1;
+                debug.append("合并引擎失败：").append(e1.getMessage()).append('\n');
                 if (output.exists()) output.delete();
                 try {
                     stage = "兜底系统 muxer 合并";
@@ -3074,6 +3150,7 @@ final class DownloadManager {
                         throw new java.io.IOException("兜底合并后抽帧仍是纯色/全黑（打开会黑屏）");
                     ok = true;
                 } catch (Throwable e2) {
+                    if (e2 instanceof Mp4Concat.Unsupported && ((Mp4Concat.Unsupported) e2).fatal) throw e2;
                     debug.append("兜底合并也失败：").append(e2.getMessage()).append('\n');
                     if (output.exists()) output.delete();
                 }
@@ -3293,8 +3370,6 @@ final class DownloadManager {
                     if (Build.VERSION.SDK_INT >= 29 && renamePublicEntry(rel, f.getName(), clean)) { ok = true; break; }
                     if (f.renameTo(target)) {
                         deletePublicFile(rel, f.getName());
-                        MediaScannerConnection.scanFile(context, new String[]{target.getAbsolutePath()},
-                                new String[]{"video/mp4"}, null);
                         ok = true;
                     }
                 }
@@ -3457,8 +3532,89 @@ final class DownloadManager {
         if (!dir.exists()) dir.mkdirs();
         File fallback = new File(dir, displayName);
         copyFile(file, fallback);
-        MediaScannerConnection.scanFile(context, new String[]{fallback.getAbsolutePath()}, new String[]{mime}, null);
+        // app 专属目录本来就不进媒体库，无需扫描（以前扫了，反而让相册多出重复条目）
         return Uri.fromFile(fallback);
+    }
+
+    private static final String GALLERY_PREFS = "gallery_cleanup";
+    /** 标记位带版本号：将来逻辑再改就升到 v2，老用户会重新跑一次清理。 */
+    private static final String GALLERY_DONE = "hidden_v2";
+    private static final String TAG = "VeyraDownload";
+
+    /**
+     * 让「下载/Veyra」整棵树不出现在系统相册/图库。
+     *
+     * <p>做法：在 Download/Veyra 放一个空的 .nomedia —— 系统媒体扫描器（MediaProvider /
+     * MediaScanner）会跳过该目录，相册查询 MediaStore 视频集合时也就看不到这些 mp4。
+     * 文件本身仍在「下载/Veyra」下，文件管理器、数据线拷出、App 内播放都不受影响。
+     *
+     * <p>另外把历史版本已经用 video/mp4 扫进媒体库的条目删掉（一次性，标记位落盘）。
+     * 老版本每次导出都调 MediaScannerConnection.scanFile(..., "video/mp4")，
+     * 用过旧版的用户相册里已经躺着这些短剧，只加 .nomedia 不会自动消失。
+     */
+    void ensureGalleryHidden() {
+        try {
+            File veyra = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), "Veyra");
+            if (!veyra.exists() && !veyra.mkdirs()) return;
+            File nomedia = new File(veyra, ".nomedia");
+            if (!nomedia.exists() || nomedia.length() > 0) {
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(nomedia)) { fos.write(new byte[0]); }
+            }
+        } catch (Exception ignored) { }
+
+        android.content.SharedPreferences prefs = context.getSharedPreferences(GALLERY_PREFS, Context.MODE_PRIVATE);
+        if (prefs.getBoolean(GALLERY_DONE, false)) return;
+        purgeGalleryEntries();
+    }
+
+    /**
+     * 删掉媒体库里 Download/Veyra 下的旧条目（只动自家目录，不碰用户其它文件）。
+     *
+     * <p>这里查 Video 集合而不是 Files：要清的就是「相册里多出来的视频」，
+     * Video 集合对「本应用自己贡献的条目」最宽松，不需要 READ_MEDIA_VIDEO 也能删。
+     *
+     * <p>标记位只在「查不到」或「全删干净」时落盘。删不动就下次启动再试 ——
+     * 旧实现是先写标记再清理，一次失败（权限未就绪、MediaProvider 正忙）会被永久记住，
+     * 用户相册里的旧短剧就再也不会消失了。
+     */
+    private void purgeGalleryEntries() {
+        int found = 0;
+        int removed = 0;
+        try {
+            android.net.Uri collection = MediaStore.Video.Media.getContentUri("external");
+            String[] projection = {MediaStore.Video.Media._ID};
+            String selection;
+            String[] args;
+            if (Build.VERSION.SDK_INT >= 29) {
+                selection = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
+                args = new String[]{"Download/Veyra/%"};
+            } else {
+                selection = MediaStore.MediaColumns.DATA + " LIKE ?";
+                args = new String[]{"%/Download/Veyra/%"};
+            }
+            java.util.List<Long> ids = new java.util.ArrayList<>();
+            try (android.database.Cursor c = context.getContentResolver()
+                    .query(collection, projection, selection, args, null)) {
+                while (c != null && c.moveToNext()) ids.add(c.getLong(0));
+            }
+            found = ids.size();
+            for (Long id : ids) {
+                try {
+                    if (context.getContentResolver()
+                            .delete(ContentUris.withAppendedId(collection, id), null, null) > 0) removed++;
+                } catch (Exception error) {
+                    android.util.Log.w(TAG, "相册清理：删条目失败 id=" + id, error);
+                }
+            }
+        } catch (Exception error) {
+            android.util.Log.w(TAG, "相册清理：查询媒体库失败", error);
+        }
+        android.util.Log.i(TAG, "相册清理：命中 " + found + " 条，清掉 " + removed + " 条");
+        if (found == 0 || removed == found) {
+            context.getSharedPreferences(GALLERY_PREFS, Context.MODE_PRIVATE)
+                    .edit().putBoolean(GALLERY_DONE, true).apply();
+        }
     }
 
     /** Download/Veyra/<subDir>/<name>（只拼路径）。 */
@@ -3490,8 +3646,10 @@ final class DownloadManager {
             if (!ensureGone(target)) { tmp.delete(); return false; }
             if (!tmp.renameTo(target)) { tmp.delete(); return false; }
             tmp = null;
-            MediaScannerConnection.scanFile(context, new String[]{target.getAbsolutePath()},
-                    new String[]{mime}, null);
+            // 不再以 video/mp4 通知媒体库：那样扫描完相册里就会多出一堆短剧。
+            // 改成在 Veyra 目录放 .nomedia，文件仍在「下载/Veyra」里可见（文件管理器），
+            // 但系统相册/图库不会收录。
+            ensureGalleryHidden();
             return true;
         } catch (Exception e) {
             if (tmp != null) { try { tmp.delete(); } catch (Exception ignored) { } }
@@ -3677,8 +3835,6 @@ final class DownloadManager {
             if (to.exists()) to.delete();
             if (!from.renameTo(to)) return false;
             try { context.getContentResolver().delete(uri, null, null); } catch (Exception ignored) { }
-            MediaScannerConnection.scanFile(context, new String[]{to.getAbsolutePath()},
-                    new String[]{"video/mp4"}, null);
             return true;
         } catch (Exception e) {
             return false;

@@ -67,6 +67,15 @@ public final class LocalPlayerActivity extends Activity {
     private FrameLayout.LayoutParams panelParams;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /** 本地播放进度（SharedPreferences）：键 = 剧名|epN 或 剧名|merged，值是毫秒。 */
+    private android.content.SharedPreferences progressPrefs;
+    private long lastProgressSave = 0;
+    /**
+     * 当前 Player 里正在播的那一集对应的进度键。
+     * 必须单独存：切集时 index 先改成新集号、play() 才被调用，
+     * 这时候若按 index 现算键，就会把上一集的位置写到新集的键上（新集的进度被顶掉）。
+     */
+    private String activeKey;
     private JSONArray episodes = new JSONArray();
     private int index = 0;
     private boolean merged = false;
@@ -92,6 +101,8 @@ public final class LocalPlayerActivity extends Activity {
         super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
+        // 断点续播：必须在 play() 之前就位，否则首播那次读不到上次进度
+        progressPrefs = getSharedPreferences("local_progress", MODE_PRIVATE);
 
         title = getIntent().getStringExtra("title");
         String path = getIntent().getStringExtra("path");
@@ -386,13 +397,61 @@ public final class LocalPlayerActivity extends Activity {
     // ---- 播放控制 ----
 
     private void play(String pathOrUrl, boolean first) {
+        // 切集前先把上一集看到哪存下来（否则「上一集/选集/竖滑切集」都会丢进度）。
+        // 这里必须 force：普通节流会让「刚播 2 秒就切集」的进度丢掉，而 activeKey
+        // 指的还是上一集，写进去的也确实是上一集的位置。
+        if (!first) saveProgress(true);
+        activeKey = progressKey();
+        lastProgressSave = 0;
         Uri uri = pathOrUrl.startsWith("http") ? Uri.parse(pathOrUrl) : Uri.fromFile(new File(pathOrUrl));
         MediaItem item = new MediaItem.Builder().setUri(uri).setMimeType(MimeTypes.VIDEO_MP4).build();
         player.setMediaItem(item);
         player.prepare();
         player.setPlayWhenReady(true);
         player.setPlaybackParameters(new androidx.media3.common.PlaybackParameters(manualSpeed));
+        // 断点续播：恢复这部剧这一集上次看到的位置。
+        // 之前完全没有本地进度，退出再进就是从头开始 —— 「不能记录播放点」就是这个问题。
+        long saved = savedPosition();
+        if (saved > 5000) {
+            player.seekTo(saved);
+            if (first) toast("已从上次 " + mmss(saved) + " 继续播放");
+        }
         refreshTitle();
+    }
+
+    /** 进度键：剧名 + 集号（合并版用 merged）。 */
+    private String progressKey() {
+        String base = title == null || title.isEmpty() ? "local" : title.replace('|', '_');
+        return base + "|" + (merged ? "merged" : "ep" + (index + 1));
+    }
+
+    /** 当前 Player 对应的键：已经开始播过就用 activeKey，否则按当前剧/集现算。 */
+    private String currentKey() {
+        return activeKey != null ? activeKey : progressKey();
+    }
+
+    private long savedPosition() {
+        if (progressPrefs == null) return 0;
+        try { return progressPrefs.getLong(currentKey(), 0); } catch (Exception e) { return 0; }
+    }
+
+    /**
+     * 保存当前播放位置。幂等、可随时调用：
+     * 不到 3 秒不存（避免「点错进去又退出」把上次的进度覆盖成 0），
+     * 播到离结尾不足 5 秒就当作看完、清掉进度（下次从头开始）。
+     */
+    private void saveProgress(boolean force) {
+        if (player == null || progressPrefs == null) return;
+        long now = System.currentTimeMillis();
+        if (!force && now - lastProgressSave < 4000) return;
+        lastProgressSave = now;
+        try {
+            long pos = player.getCurrentPosition();
+            long dur = player.getDuration();
+            if (dur <= 0 || pos <= 0) return;
+            if (pos < 3000 || pos >= dur - 5000) progressPrefs.edit().remove(currentKey()).apply();
+            else progressPrefs.edit().putLong(currentKey(), pos).apply();
+        } catch (Exception ignored) { }
     }
 
     private void refreshTitle() {
@@ -664,16 +723,24 @@ public final class LocalPlayerActivity extends Activity {
         hideSystemBars();
         handler.post(tick);
     }
-    @Override protected void onPause() { super.onPause(); if (player != null) player.setPlayWhenReady(false); }
+    @Override protected void onPause() {
+        super.onPause();
+        saveProgress(true);
+        if (player != null) player.setPlayWhenReady(false);
+    }
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
-            if (player != null) refreshTime();
+            if (player != null) {
+                refreshTime();
+                if (player.isPlaying()) saveProgress(false);
+            }
             handler.postDelayed(this, 500);
         }
     };
 
     @Override protected void onDestroy() {
+        saveProgress(true);
         super.onDestroy();
         handler.removeCallbacksAndMessages(null);
         if (view != null) view.setPlayer(null);

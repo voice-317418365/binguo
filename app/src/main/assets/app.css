@@ -1004,3 +1004,44 @@ html[data-theme=dark] .remote-test-result.fail,html[data-theme=dark] .dl-remote-
 .about-support p{font-size:12px;color:var(--muted);margin:0 0 11px;line-height:1.6}
 .about-support img{width:168px;max-width:62%;height:auto;border-radius:calc(9px * var(--corner-scale,1));display:block;margin:0 auto 8px}
 .about-support small{font-size:11px;color:var(--muted)}
+
+/* ---------------------------------------------------------------
+   color-mix() 降级（WebView < 111，Android 8~12 原厂内核常见）
+   sunny-theme.css 有 122 处 color-mix 构建材质层与彩色背景。自定义属性不校验值，
+   失效的 color-mix 不会回退到 :root 的纯色，而是让消费它的 background/color 变成
+   unset —— 表现为弹窗背板全透明、彩色背景深底配深字。
+   这里只在 appearance.js 检测到不支持时（html[data-cmx="no"]）用纯色顶掉关键令牌。
+   支持 color-mix 的设备不会命中任何一条，观感零变化。
+   :root[x][y] 的特异性足以压过 html[data-material] / html[data-theme][data-material]。
+   --------------------------------------------------------------- */
+:root[data-cmx="no"]{
+  --bg:#eceff4;--surface:#ffffff;--surface-2:#f7f8fb;--soft-base:#f3f5f9;
+  --text:#18212e;--text-2:#465468;--muted:#6c7a8d;--line:#e1e6ee;--line-strong:#ccd4e0;
+  --mat-page:#eceff4;--mat-fill:#ffffff;--mat-chrome:#f7f8fb;--mat-control:#ffffff;
+  --mat-edge:#e1e6ee;--mat-control-edge:#ccd4e0;--mat-active-bg:#eef2f9;
+}
+:root[data-cmx="no"][data-theme="dark"]{
+  --bg:#12171f;--surface:#1a212b;--surface-2:#202834;--soft-base:#1b222c;
+  --text:#e9eef6;--text-2:#bcc7d6;--muted:#93a1b4;--line:#2b3542;--line-strong:#3a4757;
+  --mat-page:#12171f;--mat-fill:#1a212b;--mat-chrome:#1b222c;--mat-control:#202834;
+  --mat-edge:#2b3542;--mat-control-edge:#3a4757;--mat-active-bg:#243040;
+}
+/* 彩色背景靠 color-mix 把 accent 混进底色，旧内核上这条会失效并回退到 --mat-page；
+   显式给一条不依赖 color-mix 的极浅 accent 渐变，保留一点「彩色」的意图 */
+:root[data-cmx="no"][data-bg="color"] #app{
+  background:linear-gradient(168deg,#f2f4f9 0%,var(--mat-page) 44%,#eef2f6 100%);
+}
+
+/* --------------------------------------------------------------- 底部「我的」更新红点
+   头部设置按钮上的角标在刷剧/全屏时看不到，「我的」是常驻入口，红点点在这里才能被注意到。
+   点的大小/位置刻意做得比图标小一圈，避免盖住人形图标；圆环用 --dock 把红点和图标分开。
+   --------------------------------------------------------------- */
+#dock button.has-update .nav-icon{position:relative}
+#dock button.has-update .nav-icon:after{
+  content:"";position:absolute;top:1px;right:5px;width:7px;height:7px;border-radius:50%;
+  background:#e74845;box-shadow:0 0 0 2px var(--dock);
+  /* 弹一次就停，别一直闪：新版本只会在冷启动/自动检查时出现，闪动是为了让人第一眼看到 */
+  animation:dock-dot-in .34s cubic-bezier(.2,.8,.3,1.2) both;
+}
+@keyframes dock-dot-in{0%{transform:scale(0);opacity:0}60%{transform:scale(1.35);opacity:1}100%{transform:scale(1);opacity:1}}
+@media(prefers-reduced-motion:reduce){#dock button.has-update .nav-icon:after{animation:none}}

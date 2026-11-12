@@ -62,6 +62,9 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final String TAG = "HuangGuo";
     private static final int AVATAR_PICKER = 7101;
+    /** 清理相册老条目：①申请读权限 ②系统删除确认框 */
+    private static final int REQUEST_GALLERY_READ = 7102;
+    private static final int REQUEST_GALLERY_DELETE = 7103;
     private final ExecutorService requests = Executors.newFixedThreadPool(4);
     private final ExecutorService localRequests = Executors.newSingleThreadExecutor();
     private final ExecutorService coverRequests = Executors.newFixedThreadPool(2);
@@ -259,6 +262,8 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         com.hongguotv.core.AppContext.init(this);
         installCrashLogger();
+        // 「清理相册」中途被杀进程/崩溃时，暂存目录里的文件还没改回去 —— 启动时补一次
+        try { GalleryCleanup.restore(this); } catch (Exception ignored) { }
         deviceType = DeviceProfile.type(this);
         // TV 独立包：装在什么设备上都按电视跑（横屏、焦点导航、扫码输入、tv.html），
         // 否则拿手机装 TV 包调试时会被判成 phone，遥控器逻辑和局域网服务全都不会起来。
@@ -731,8 +736,66 @@ public final class MainActivity extends Activity {
         if (hasFocus && webView != null) UiRefreshRate.apply(this, webView);
     }
 
+    /**
+     * 把旧版本扫进系统相册的下载视频「从相册里摘掉」，文件一个都不删。
+     *
+     * <p>三步：①申请读权限（否则连这些行都查不到）②把文件改名字挪进隐藏暂存目录
+     * ③让系统按 URI 删记录（此时原路径已无文件，MediaProvider 只清数据库行），
+     * 删完在 onActivityResult 里把文件改回原名。详见 {@link GalleryCleanup}。
+     *
+     * <p>不能直接删：MediaStore 的删除是「连文件一起删」，用户的下载就没了。
+     */
+    private Object cleanGallery() throws Exception {
+        String readPermission = Build.VERSION.SDK_INT >= 33
+                ? android.Manifest.permission.READ_MEDIA_VIDEO
+                : android.Manifest.permission.READ_EXTERNAL_STORAGE;
+        if (checkSelfPermission(readPermission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            runOnUiThread(() -> requestPermissions(new String[]{readPermission}, REQUEST_GALLERY_READ));
+            return new JSONObject().put("status", "need-permission");
+        }
+        java.util.List<GalleryCleanup.Entry> found = GalleryCleanup.find(this);
+        if (found.isEmpty()) return new JSONObject().put("status", "empty");
+        if (Build.VERSION.SDK_INT < 30) {
+            // 老系统没有「删除确认」框，只能自己删；删之前同样先把文件挪开
+            java.util.List<GalleryCleanup.Entry> staged = GalleryCleanup.stage(this, found);
+            int removed = 0;
+            for (GalleryCleanup.Entry entry : staged) {
+                try { if (getContentResolver().delete(entry.uri, null, null) > 0) removed++; } catch (Exception ignored) { }
+            }
+            GalleryCleanup.restore(this);
+            return new JSONObject().put("status", "done").put("count", found.size()).put("removed", removed);
+        }
+        java.util.List<GalleryCleanup.Entry> staged = GalleryCleanup.stage(this, found);
+        if (staged.isEmpty()) {
+            // 文件挪不动（被占用/没有写权限）：宁可什么都不做，也不能让系统把文件删了
+            return new JSONObject().put("status", "blocked").put("count", found.size());
+        }
+        java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();
+        for (GalleryCleanup.Entry entry : staged) uris.add(entry.uri);
+        final android.app.PendingIntent request =
+                android.provider.MediaStore.createDeleteRequest(getContentResolver(), uris);
+        runOnUiThread(() -> {
+            try {
+                startIntentSenderForResult(request.getIntentSender(), REQUEST_GALLERY_DELETE, null, 0, 0, 0);
+            } catch (Exception error) {
+                Log.w(TAG, "清理相册：拉起系统确认框失败", error);
+                GalleryCleanup.restore(this);
+            }
+        });
+        return new JSONObject().put("status", "confirm").put("count", uris.size());
+    }
+
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_GALLERY_DELETE) {
+            // 不管用户点了允许还是拒绝，都要把暂存的文件改回原路径
+            GalleryCleanup.restore(this);
+            final boolean done = resultCode == RESULT_OK;
+            if (webView != null) {
+                webView.evaluateJavascript("window.hgGalleryCleaned && window.hgGalleryCleaned(" + done + ")", null);
+            }
+            return;
+        }
         if (requestCode == REQUEST_QR_LOGIN) {
             if (webView == null) return;
             String message = data == null ? null : data.getStringExtra("message");
@@ -1343,6 +1406,7 @@ public final class MainActivity extends Activity {
                 }
                 return new JSONObject().put("freed", freed);
             }
+            case "clean-gallery": return cleanGallery();
             case "check-hot-update": return hotUpdates.check(true);
             case "apply-hot-update": runOnUiThread(this::applyPendingResources); return true;
             case "age-status": return ContentMode.PUBLIC.equals(mode.active()) || mode.adultConfirmed();

@@ -47,6 +47,16 @@
     } catch (e) { }
   })();
   </script>
+  <!-- color-mix() 能力检测：WebView < 111（Android 8~12 原厂内核常见）会让材质层整片失效，
+       表现为弹窗背板全透明、彩色背景深底配深字。这里在样式生效前先打标记，
+       app.css 的纯色降级立刻接管，避免首屏闪一下坏样式。支持的内核打 yes，不命中任何降级规则。 -->
+  <script>
+  (function () {
+    var ok = false;
+    try { ok = !!(window.CSS && CSS.supports && CSS.supports('color', 'color-mix(in srgb, red, blue)')); } catch (e) { }
+    document.documentElement.dataset.cmx = ok ? 'yes' : 'no';
+  })();
+  </script>
 </head>
 <body>
   <!-- 液态玻璃由 dock-refract.js 统一挂载：Sunny 圆角 SDF/circleMap 只折射边缘，
