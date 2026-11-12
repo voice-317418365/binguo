@@ -11,11 +11,17 @@
     python scripts/upstream-watch.py               检查更新，有更新才出报告
     python scripts/upstream-watch.py --json        机器可读输出（定时任务用）
     python scripts/upstream-watch.py --force       即使无更新也出一份全量报告
-    python scripts/upstream-watch.py --since v0.28.12   指定基线 tag
+    python scripts/upstream-watch.py --since v0.28.10  临时改基线 tag（不写回文件）
 
 产出（docs/upstream-watch/）：
     state.json          上次检查到的上游 HEAD 与基线信息
+    baseline.json       上游对齐基线（已搬完的 tag + 明确不跟的 tag 及理由）
     YYYY-MM-DD.md       当日巡检报告
+
+基线有两条，各管一件事（见 baseline.json）：
+    snapshot_commit  git 里那份上游源码快照，只用来算「我方改了哪些文件」
+    synced_tag       上游已经逐条搬完的版本，compare 从这里起算
+                      —— 不写这个文件就退回快照 tag，会把已合并的提交天天重报一遍
 
 硬约束：只读 git 与 GitHub API，不 fetch、不合并、不提交、不推送、不改任何业务代码。
 """
@@ -37,6 +43,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 OUT_DIR = REPO / "docs" / "upstream-watch"
 STATE_FILE = OUT_DIR / "state.json"
+BASELINE_FILE = OUT_DIR / "baseline.json"
 UPSTREAM = "gybeyond1/Veyra"
 API = "https://api.github.com"
 FALLBACK_BASELINE_TAG = "v0.28.12"
@@ -150,18 +157,50 @@ def git(*args: str) -> str:
     return proc.stdout.strip()
 
 
+def commit_exists(sha: str) -> bool:
+    """判断某个提交是否还在本地历史里（重建过仓库时会失效）。"""
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
+        return False
+    proc = subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def load_baseline() -> dict:
+    """读基线文件；缺失或坏掉都当成「没有配置」，退回快照 tag。"""
+    try:
+        data = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def local_state() -> dict:
-    """读取本地仓库的基线提交、我方改动文件、当前版本号。"""
+    """读取本地仓库的基线（源码快照 + 上游对齐）、我方改动文件、当前版本号。"""
     head = git("rev-parse", "HEAD")
-    base_sha, base_tag = None, FALLBACK_BASELINE_TAG
-    for line in git("log", "--format=%H%x09%s", "HEAD").splitlines():
-        sha, _, subject = line.partition("\t")
-        match = re.match(r"baseline:\s*(v?[\d.]+)\s+upstream snapshot", subject.strip(), re.I)
-        if match:
-            base_sha, base_tag = sha, match.group(1)
-            break
+    conf = load_baseline()
+    pinned = str(conf.get("snapshot_commit") or "").strip()
+    base_sha, base_tag = None, str(conf.get("snapshot_tag") or "").strip()
+    if pinned and commit_exists(pinned):
+        base_sha = pinned
+    if not base_sha:
+        # 没有配置或者 commit 已失效：从提交标题里找 baseline 标记
+        for line in git("log", "--format=%H%x09%s", "HEAD").splitlines():
+            sha, _, subject = line.partition("\t")
+            match = re.match(r"baseline:\s*(v?[\d.]+)\s+upstream snapshot", subject.strip(), re.I)
+            if match:
+                base_sha, base_tag = sha, match.group(1)
+                break
     if not base_sha:
         raise RuntimeError("本地历史里找不到 baseline 提交，无法定位分叉基线")
+    if not base_tag:
+        base_tag = FALLBACK_BASELINE_TAG
+    # 上游对齐基线：baseline.json 说了算（已经逐条搬完的 tag）
+    synced_tag = str(conf.get("synced_tag") or "").strip() or base_tag
 
     ours = {}
     for line in git("diff", "--name-status", f"{base_sha}..HEAD").splitlines():
@@ -181,7 +220,10 @@ def local_state() -> dict:
     return {
         "head": head,
         "baseline_commit": base_sha,
-        "baseline_tag": base_tag,
+        "baseline_tag": synced_tag,
+        "snapshot_tag": base_tag,
+        "snapshot_commit": base_sha,
+        "skipped": conf.get("skipped") or [],
         "our_version": version,
         "ours": ours,
     }
@@ -304,6 +346,33 @@ def render_report(loc: dict, up: dict, inc: dict | None, base_tag: str, forced: 
     # 首次运行（没有上次检查点）时，"本次" 就等于自基线以来的全量
     inc_commits = commit_rows(inc.get("commits", [])) if inc else full_commits
 
+    def cell(value: object) -> str:
+        return str(value or "").replace("|", "\\|").replace("\n", " ")
+
+    baseline_section: list[str] = []
+    skipped = loc.get("skipped") or []
+    if skipped:
+        baseline_section = [
+            "",
+            "## 基线说明：已对齐 / 明确不跟",
+            "",
+            f"- 上游对齐基线 `{base_tag}`（见 `docs/upstream-watch/baseline.json`）：这个 tag 及之前的改动已逐条搬完，不再计入「未合并」。",
+            f"- 源码快照 `{loc['snapshot_tag']}`（`{loc['baseline_commit'][:10]}`）：git 里的分叉起点，只用于计算「我方改了哪些文件」。",
+            "",
+            "| 版本 | 内容 | 不跟的理由 |",
+            "| --- | --- | --- |",
+        ]
+        for item in skipped:
+            if isinstance(item, dict):
+                baseline_section.append(
+                    f"| `{cell(item.get('tag'))}` | {cell(item.get('title'))} | {cell(item.get('why'))} |"
+                )
+        baseline_section += [
+            "",
+            "> 这些不是「漏合并」，是有意跳过。策略变了请改 `baseline.json` 再重新评估。",
+            "",
+        ]
+
     lines = [
         f"# Veyra 上游更新巡检 · {now:%Y-%m-%d}",
         "",
@@ -312,7 +381,7 @@ def render_report(loc: dict, up: dict, inc: dict | None, base_tag: str, forced: 
         "## 结论速览",
         "",
         f"- **上游**：`{up['latest_tag'] or '未打 tag'}`　HEAD `{up['head_sha'][:10]}`（{local_time(up['head_date'])}）— {up['head_message']}",
-        f"- **我方**：`{loc['our_version']}`　HEAD `{loc['head'][:10]}`，基线 `{base_tag}`（`{loc['baseline_commit'][:10]}`）",
+        f"- **我方**：`{loc['our_version']}`　HEAD `{loc['head'][:10]}`，上游对齐基线 `{base_tag}`，源码快照 `{loc['snapshot_tag']}`（`{loc['baseline_commit'][:10]}`）",
         f"- **本次新增**：{len(inc_commits)} 个提交 / {len(scope['all'])} 个文件变动",
         f"- **自基线累计未合并**：{len(full_commits)} 个提交 / {len(full_files['all'])} 个文件变动",
         f"- **撞上我方定制**：本次 {len(scope['overlap'])} 个、累计 {len(full_files['overlap'])} 个（🔴 需人工合并）",
@@ -321,6 +390,7 @@ def render_report(loc: dict, up: dict, inc: dict | None, base_tag: str, forced: 
         "",
         "> 合并结论由每日定时任务在文末「合并建议」章节补充；本脚本只负责采集事实，不做决策、不改代码。",
         "",
+        *baseline_section,
         "## 本次新增提交",
         "",
     ]
@@ -512,6 +582,7 @@ def main() -> int:
         "last_check": now_iso,
         "last_report": path.name,
         "baseline_tag": baseline,
+        "snapshot_tag": loc["snapshot_tag"],
         "baseline_commit": loc["baseline_commit"],
         "checks": int(state.get("checks", 0)) + 1,
         "updates": int(state.get("updates", 0)) + (1 if changed else 0),

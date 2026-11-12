@@ -1,0 +1,42 @@
+{
+  "synced_tag": "v0.28.18",
+  "synced_at": "2026-11-12",
+  "snapshot_tag": "v0.28.12",
+  "snapshot_commit": "89932e67a0ed30443829d93278102509a7b26737",
+  "note": "两套基线各管一件事：snapshot_commit 是 git 里的 v0.28.12 源码快照提交，用来算「我方改了哪些文件」；synced_tag 是已经逐条搬完的上游版本，巡检的 compare 从这里起算，避免每天重复报已合并的提交。0.28.13~0.28.18 已全部对齐（含 1435 补上的直连优先取流）。",
+  "synced_scope": {
+    "v0.28.13": "本机播放网关 LocalPlaybackGateway（m3u8 重写/补头）、禁果源 jinguo.js、legacy-core.js",
+    "v0.28.14": "播不了的两处硬伤、六源体检、ChannelHttpDataSource 凭据透传",
+    "v0.28.15": "红果直连优先 resolveStream、设备号缓存、预热实例池、后端预热与顺序预取",
+    "v0.28.16": "点开即播：详情页/点击瞬间 prewarm",
+    "v0.28.17": "起播门槛 2.5s→0.3s、重缓冲 1.2s（EpisodeLoadControl）",
+    "v0.28.18": "进程级 details/episodes 缓存（8 分钟 TTL）、PlayerKeeper 跨页复用"
+  },
+  "skipped": [
+    {
+      "tag": "v0.28.19",
+      "title": "更多推荐卡换半透明模糊遮罩",
+      "why": "纯视觉细节。我方「更多推荐」卡片已经单独改过样式，不跟这一版，避免和现有磨砂玻璃风格打架。"
+    },
+    {
+      "tag": "v0.28.20",
+      "title": "接黄豆/帝果，下架野果与禁果，修黄果旧版/AI 封面",
+      "why": "内容源增删，与「隐藏黄果入口、保留现有私密源」的策略冲突。我方 server/sources 里野果、禁果仍在用。"
+    },
+    {
+      "tag": "v0.28.21",
+      "title": "电视包不再内置 arm64 so",
+      "why": "等效已满足，不单独搬。我方 jniLibs 只挂在 mobile flavor 下（app/src/mobile/jniLibs），tv 包本来就不带 so。"
+    },
+    {
+      "tag": "v0.28.22",
+      "title": "私密源改在手机上直接取数，后端不再参与",
+      "why": "目标一致但实现不同：我方走 LocalPlaybackGateway 本机网关，私密源请求已经在手机上完成，不需要整体搬迁。"
+    },
+    {
+      "tag": "v0.28.23~v0.28.26",
+      "title": "帝果详情页没有分集 / 一片一 id / 播放页防盗链 / 取流三条兜底",
+      "why": "我方没有接帝果源，没有对应代码，搬过来是死代码。以后接帝果再回头整段看这 4 个提交。"
+    }
+  ]
+}
