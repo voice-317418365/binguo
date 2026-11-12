@@ -263,7 +263,7 @@ private static final String RELEASE_BASE = "https://github.com/voice-317418365/b
 
 发 Release 时：
 
-- tag 用 `v<版本>` 格式（如 `v0.28.1435`）
+- tag **必须**用 `v<版本>` 格式（如 `v0.28.1435`）。**不要**写成 `Binguo-0.28.1435`：`manifestOf()` 只剥首字母 `v`，紧接着 `parseVersion()` 要求三段纯数字，带 `Binguo-` 前缀会解析失败，客户端把这次 Release 当成「没有新版本」。1431/1432 的历史 Release 就是这么失效的，静态源正常时看不出来
 - asset 文件名要和静态源一致（`Binguo-0.28.1435.apk`），下载时文件名是从 URL 末段推出来的
 - 仓库还没发过 Release 时 API 返回 404，客户端直接当作"已是最新"，不报错
 
