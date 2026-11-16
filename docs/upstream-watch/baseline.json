@@ -1,16 +1,24 @@
 {
-  "synced_tag": "v0.28.18",
-  "synced_at": "2026-11-12",
+  "synced_tag": "v0.28.62",
+  "synced_at": "2026-11-17",
   "snapshot_tag": "v0.28.12",
   "snapshot_commit": "89932e67a0ed30443829d93278102509a7b26737",
-  "note": "两套基线各管一件事：snapshot_commit 是 git 里的 v0.28.12 源码快照提交，用来算「我方改了哪些文件」；synced_tag 是已经逐条搬完的上游版本，巡检的 compare 从这里起算，避免每天重复报已合并的提交。0.28.13~0.28.18 已全部对齐（含 1435 补上的直连优先取流）。",
+  "note": "两套基线各管一件事：snapshot_commit 是 git 里的 v0.28.12 源码快照提交，用来算「我方改了哪些文件」；synced_tag 是已经逐条搬完的上游版本，巡检的 compare 从这里起算，避免每天重复报已合并的提交。0.28.13~0.28.18 已全部对齐（1435 补上直连优先取流），0.28.36~0.28.62 在 1436 一次性补完（选集真实集号、电视端界面改版、红果 v5 取流）。",
   "synced_scope": {
     "v0.28.13": "本机播放网关 LocalPlaybackGateway（m3u8 重写/补头）、禁果源 jinguo.js、legacy-core.js",
     "v0.28.14": "播不了的两处硬伤、六源体检、ChannelHttpDataSource 凭据透传",
-    "v0.28.15": "红果直连优先 resolveStream、设备号缓存、预热实例池、后端预热与顺序预取",
+    "v0.28.15": "红果直连优先 resolveStream、设备号缓存、预热实例池、后端预热与顺序预取（1436 起 resolveStream 已整体换成 v5）",
     "v0.28.16": "点开即播：详情页/点击瞬间 prewarm",
     "v0.28.17": "起播门槛 2.5s→0.3s、重缓冲 1.2s（EpisodeLoadControl）",
-    "v0.28.18": "进程级 details/episodes 缓存（8 分钟 TTL）、PlayerKeeper 跨页复用"
+    "v0.28.18": "进程级 details/episodes 缓存（8 分钟 TTL）、PlayerKeeper 跨页复用",
+    "v0.28.36": "本地播放按真实集号 + 播放页选集 + 系统 Toast + 选集滚动不弹回（app.js 只搬具体改动，保留我方 t.detail 签名与 downloadTaskActive）",
+    "v0.28.37": "NAS 播放按真实集号取文件（server/index.js episodes/files 接口、MainActivity 先问 exists）",
+    "v0.28.38": "去掉播放页重复的「选集」按钮",
+    "v0.28.39": "合并版分集已清理时不再列选集",
+    "v0.28.40~v0.28.59": "电视端界面改版：左上角菜单 + 顶栏常驻（分类胶囊 + 搜索/最近/设置）、圆环焦点、海报放大 1.12、上下换行按槽位对齐；账号面板四项 + 私密二级页。tv.html/tv.js/tv.css 整文件替换（我方自基线起零定制）",
+    "v0.28.46": "DeviceProfile.isTvRole（R.bool.veyra_lite），平板装 TV 包也能被投屏找到",
+    "v0.28.50": "投屏面板换成选集那套皮（PlayerActivity castPanel/castScrim）",
+    "v0.28.61~v0.28.62": "红果取流 v5：HongguoDirect / HongguoSign551 / HongguoV5，匿名注册 + player/v1（aid 8662 不变）。我方保留后端兜底，并修掉上游 writeBytes 在 Android <13 的 NoSuchMethodError"
   },
   "skipped": [
     {
@@ -37,6 +45,16 @@
       "tag": "v0.28.23~v0.28.26",
       "title": "帝果详情页没有分集 / 一片一 id / 播放页防盗链 / 取流三条兜底",
       "why": "我方没有接帝果源，没有对应代码，搬过来是死代码。以后接帝果再回头整段看这 4 个提交。"
+    },
+    {
+      "tag": "v0.28.60",
+      "title": "红果播放改走「匿名注册 + 551 签名」",
+      "why": "上游自己的中间态：第二天就被 0.28.61 的 v5 签名取代，0.28.62 又补了 PKCS#7。我方直接跟到 v5，不跟这一版。"
+    },
+    {
+      "tag": "v0.28.36~v0.28.62 内的 chore/版本号提交",
+      "title": "上游 README/CHANGELOG 与版本号递增、localsrc/帝果/黄豆私密源、app.css 遮罩",
+      "why": "版本号我方自成一条线（0.28.14xx）；文档与内容源增删与我方策略无关，搬过来只会制造无意义冲突。"
     }
   ]
 }

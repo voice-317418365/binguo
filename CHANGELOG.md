@@ -2,6 +2,51 @@
 
 版本号沿用自建线 `0.28.14xx`（versionCode `414xx`），与上游 `v0.28.x` 区分开。APK 与 `dist/latest.json` 属于发布产物，`dist/` 已加入 `.gitignore`，变更记录以本文件为准。
 
+## 0.28.1436（2026-11-17）
+
+本版合入上游 `v0.28.36`~`v0.28.62` 全部有效改动（选集真实集号、电视端界面改版、红果 v5 取流），并修掉一个上游自带的兼容性 bug。
+
+### 新增
+
+- **红果取流签名换代：551 → v5**（对齐上游 `0.28.60`~`0.28.62`）。新增三个类：`HongguoDirect`（匿名注册 + 取址主流程）、`HongguoSign551`（ttEncrypt / AES / PKCS#7 补齐）、`HongguoV5`（Medusa / Helios 签名）。`HongguoRepository.resolveStream` 改为 v5 单路，9 秒预算；域名从 `sinfonlineb` 换到 `sinfonlinea`，接口从 `video_model/v1` 换到 `/novel/player/multi_video_model/player/v1`。aid 仍为 `8662`。
+  与上游唯一的差异：v5 失败时**仍保留我方后端 `upstream.stream` 兜底**。上游把这层删了（它的后端已永久 502），我方留着不影响 v5 成功路径，只是保证 v5 在本机环境异常时不至于彻底播不了。
+- **电视端界面改版**（对齐上游 `0.28.40`~`0.28.59`）：左侧抽屉与左上角头像入口整体撤掉，改为顶栏常驻（分类胶囊在左、搜索/最近/设置三个图标在右，带顶部渐隐）；焦点框由硬矩形改为贴着图形本身的圆环；海报选中去掉描边、放大到 1.12；上下换行按「槽位」对齐，不再整屏回弹；账号面板收成四项 + 私密模式二级页。`tv.html` / `tv.js` / `tv.css` 三件套整文件替换（我方自基线起对这三个文件零改动）。
+- **投屏面板换皮**：手机播放页的 `AlertDialog` 设备列表换成与「选集」同款的深棕圆角面板（金色描边 + 缩放动画），返回键 / 转屏 / `onPause` 三处都补了关闭逻辑。
+- **原生 Toast**：APP 内嵌页面走 Android 系统 Toast（屏幕底部、带应用图标），浏览器 / 网页版回退到页面浮层。下载提交的三处确认提示（推送设备 / 提交 NAS / 开始下载）改走系统 Toast。
+
+### 改进
+
+- **选集按真实集号**（对齐上游 `0.28.36`~`0.28.39`，server 与 app 同步）：`server/index.js` 的 `episodes` 接口按 `ep.index` 返回、`files` 接口按真实集号取文件并兼容旧客户端下标；`server/downloader.js` 重试失败集改为按 `index` 匹配、任务对外新增真实集号数组；`MainActivity` 的 NAS 播放先问 `/episodes` 拿 `exists`，只保留服务器上真实存在的分集（合并完成后后端会清理分集，以前照着旧列表造地址，点开就 404）；`LocalPlayerActivity` 新增 `episodeNo` / `episodePlayable` / `playableEpisodeCount`，选集面板只列可播集、打开自动滚到当前集，顶栏与上一集/竖滑预览都用真实集号。
+- **选集面板不再回弹**：选中/全选只切换单个格子的 class 并刷新计数，不再整块重绘列表，滚动位置跨重绘保留（以前滑到第 80 集点一下立刻弹回最前面）。
+- **下载并发闸门**：全局 `DL_GATE` 从固定 8 改为与集并发数一致（10）。原来设 10 个并发实际只有 8 集在跑。
+- **合并音轨统一**：native 侧新增 AAC AOT 归一（LC 1024 / HE 2048 帧长混装判定，extradata 的 AudioSpecificConfig 为一手证据），音频整轨重建是这条链路里唯一新增编码的分支，失败时自动清产物、关掉重建开关、退回纯 copy 重跑一次，不会把整部剧拖死。
+- **电视盒子播放大片不再 OOM**：`RemoteVideo` 的预热缓存从「一个越拼越大的 ByteArray」改为「1MB 分段窗口 + 上限（堆的 1/8，4~12MB）」，播放头前进时窗口跟着滑，任何时刻单次分配不超过 1MB。旧写法在 48MB 堆的盒子上拼到 9MB 就会 `Failed to allocate a 10485776 byte allocation`。服务器忽略 `Range` 把整片倒回来时也不再 `body.bytes()` 一次全读进内存，改为边读边丢。
+- `AndroidManifest` 打开 `largeHeap`。
+
+### 修复
+
+- **v5 在 Android 12 及以下必失败（上游 bug）**：`HongguoV5` 用了 `ByteArrayOutputStream.writeBytes(byte[])`，那是 Java 11 的 API，Android 要到 **API 33（Android 13）** 才提供，而上游 `minSdk` 写的是 26。实测 Android 12 上每次取址都是 `NoSuchMethodError: No virtual method writeBytes([B)V`，只能落回老链路（表现是每集多等 9 秒）。改为内部类 `Buf` 上的自定义 `push()`，8 处调用点替换；方法名刻意不叫 `writeBytes`，避免被 D8 反优化回父类那根不存在的引用（`ContainerFixer` 里早有同样先例）。
+- **电视上崩溃弹窗关不掉**：原对话框 `setCancelable(false)`，正文又抢焦点，遥控器上下键在日志里打转、永远到不了按钮，`dismiss` 不触发导致快照永远留在盘里，每次启动都弹。现在：打开时先删快照（哪怕强杀进程下次也是干净的）、正文与 ScrollView 不抢焦点、日志限高 45% 屏高、返回/确定/菜单键任意一个都关闭、焦点直接压在「关闭」按钮上。
+- **平板装电视包接不了投屏**：`DeviceProfile` 新增 `isTvRole()`（读 `R.bool.veyra_lite`，main=false / tv=true），`DeviceLink` 与 `MainActivity` 三处调用替换。启动页判定仍用 `isTv`（按硬件特性），保持不变。
+- **下载卡片状态判定错**：NAS 任务状态是 `queued` / `downloading` / `merging`，不是 `running`，原来只认 `running` 会把「合并中」当成已结束，按钮与文案全错；现在按 `downloadTaskActive` 判定，合并中显示后端阶段文字且不给「取消」（后端删任务会把分集目录整个 `rm`，正在被 ffmpeg 读的文件会中途消失）。
+- 下载卡片重绘签名补上 `detail`：合并阶段百分比长时间停在同一档，只有「第 63 集 / 第 64 集」这类文字在变，不带上它轮询就不重绘，进度文字定在打开那一刻。
+
+### 验证（模拟器 emulator-5554，Android 12 / API 31 / x86_64）
+
+- 红果第 1 集正常出画、弹幕正常；日志无「退回后端兜底」、无 `HongguoSigner` 调用 → 确认走的是 v5 新链路。修 `writeBytes` 之前同一环境下必定 `NoSuchMethodError` 后降级。
+- 选集面板：滚到 26~55 段，点第 41 集高亮正确、计数 1/96、滚动位置纹丝不动；点全选 96/96、按钮变「清空」、位置仍不动。
+- 提交下载后屏幕底部出现带彬果图标的系统 Toast「已开始下载 1 集，可在『我的下载』查看进度」。
+- 电视包（`com.veyra.gybeyond.tv.playbackqa`）：顶栏常驻、分类胶囊、右上三图标、焦点放大 1.12、翻行整行滚；账号面板显示 v0.28.1436 与四项按钮；私密二级页三项 + 返回。
+- 双端 release 编译通过，签名 `CN=Veyra Mod`。
+
+### 未验证
+
+- 投屏面板本体需要登录账号且同一账号下有在线电视/电脑，只验证到「未登录点投屏不崩」+ 编译与符号齐全。
+
+### 仓库维护
+
+- 上游对齐基线 `v0.28.18` → **`v0.28.62`**，`docs/upstream-watch/baseline.json` 的 `synced_scope` 补上 `0.28.36`~`0.28.62` 各段，`skipped` 补上本批明确不跟的条目：`0.28.60` 的 551 中间态（直接跟到 `0.28.62` 的 v5）、上游版本号与 chore 提交（我方版本号自成一条线）、`app.css` 遮罩，以及 `localsrc` / 帝果 / 黄豆私密源。
+
 ## 0.28.1435（2026-11-12）
 
 ### 变更

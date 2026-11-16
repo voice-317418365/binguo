@@ -213,9 +213,13 @@ function probeFile(file) {
     layout: audio ? audio.channel_layout || '' : '',
     audioTB: audio ? audio.time_base || '' : '',
     duration: Number(video.duration) || 0,
+    audioDuration: audio ? Number(audio.duration) || 0 : 0,
     videoStart: Number(video.start_time) || 0,
     audioStart: audio ? Number(audio.start_time) || 0 : 0,
     avOffset: audio ? (Number(video.start_time) || 0) - (Number(audio.start_time) || 0) : 0,
+    /* 音轨比画面长多少：concat 按每段最长流推进，一段多 0.5s，下一集画面就晚 0.5s，
+     * 整季累积成整片音画错位，必须按本集视频时长裁掉这段尾巴。 */
+    avDrift: audio ? (Number(audio.duration) || 0) - (Number(video.duration) || 0) : 0,
     timescale: tb.length === 2 ? Number(tb[1]) || 0 : 0,
     audioTimescale: atb.length === 2 ? Number(atb[1]) || 0 : 0,
   };
@@ -248,15 +252,18 @@ function buildPlan(infos) {
   for (const info of infos) {
     const video = videoKey(info) !== plan.video;
     const sync = !!info.audioCodec && Math.abs(info.avOffset || 0) > 0.002;
+    // 音轨比画面长 40ms 以上：按本集视频时长裁齐，避免逐集累积成整片音画不同步
+    const trim = !!info.audioCodec && (info.avDrift || 0) > 0.04;
     const step = {
       video,
       audio: !!info.audioCodec && (video || audioKey(info) !== ak || sync),
       sync,
+      trim,
       remux: false,
     };
     if (step.video || step.remux || (info.vTag && info.vTag !== infos[0].vTag)) plan.parameters = true;
     step.remux = info.videoTB !== videoTB || (!!info.audioCodec && info.audioTimescale !== audioTs)
-      || Math.abs(info.avOffset || 0) > 0.002;
+      || Math.abs(info.avOffset || 0) > 0.002 || trim;
     plan.steps.push(step);
   }
   return plan;
@@ -296,14 +303,17 @@ async function mergeEpisodes(episodeFiles, outputPath, workDir, report) {
     const step = plan.steps[i];
     if (!step.video && !step.audio && !step.remux) { prepared[i] = episodeFiles[i]; continue; }
     // 断点续传：已处理的集直接复用
-    const cooked = safeJoin(workDir, `ep${String(i + 1).padStart(3, '0')}-sync4.mp4`);
+    // 带 fix5：同步修复前的 sync4 中间产物不再复用，否则裁齐/归零不会生效
+    const cooked = safeJoin(workDir, `ep${String(i + 1).padStart(3, '0')}-fix5.mp4`);
     if (fs.existsSync(cooked) && fs.statSync(cooked).size > 1024) { prepared[i] = cooked; continue; }
-    const action = step.video ? '统一转码视频+音轨' : (step.sync ? '校准音画起点'
-      : (step.audio ? '统一音轨' : '无损换封装(统一时间基)'));
+    const action = step.video ? '统一转码视频+音轨' : (step.trim ? '裁齐音轨长度'
+      : (step.sync ? '校准音画起点' : (step.audio ? '统一音轨' : '无损换封装(统一时间基)')));
     report(5 + Math.round(i * 55 / episodeFiles.length), `${action}第 ${i + 1} 集`);
     const args = [];
     let audioInput = 0;
-    if (!step.video && step.audio && info.audioCodec) {
+    // 起点偏移 / 音轨过长都靠双输入各自归零：单输入做不到只动音轨不动视频
+    const cut = !step.video && (step.sync || step.trim);
+    if (!step.video && (step.audio || cut) && info.audioCodec) {
       // 视频 copy、音频重编码时分别归零：避免 AAC priming 在正向偏移下多出一帧声音。
       args.push('-itsoffset', (-(info.videoStart || 0)).toFixed(6), '-i', episodeFiles[i]);
       args.push('-itsoffset', (-(info.audioStart || 0)).toFixed(6), '-i', episodeFiles[i]);
@@ -335,10 +345,10 @@ async function mergeEpisodes(episodeFiles, outputPath, workDir, report) {
     } else {
       args.push('-an');
     }
-    // 转码时按本集视频时长截断输出，避免 apad 无限补静音导致音画不同步 / ffmpeg 永不结束
-    if (step.video || step.audio) args.push('-t', String(info.duration || 0));
+    // 转码 / 裁齐 / 归零时按本集视频时长截断输出，避免 apad 无限补静音导致音画不同步 / ffmpeg 永不结束
+    if ((step.video || step.audio || cut) && info.duration > 0) args.push('-t', String(info.duration));
     args.push('-max_muxing_queue_size', '4096');
-    args.push('-video_track_timescale', String(plan.timescale), '-f', 'mp4', '-y', cooked);
+    args.push('-video_track_timescale', String(plan.timescale), '-avoid_negative_ts', 'make_zero', '-f', 'mp4', '-y', cooked);
     await runFFmpeg(args);
     prepared[i] = cooked;
   }
@@ -348,9 +358,28 @@ async function mergeEpisodes(episodeFiles, outputPath, workDir, report) {
   const lines = ['ffconcat version 1.0'];
   for (const f of prepared) lines.push(`file '${String(f).replace(/'/g, "'\\''")}'`);
   fs.writeFileSync(listFile, lines.join('\n') + '\n');
+  /* 音频整轨重编码：逐集编码再 concat 时每集都带一段 AAC 编码器延迟（priming，约 23ms），
+   * concat 不会互相抵消，每个集边界会留下重叠包 / 视频丢帧，整季累积即音画不同步与咔哒声。
+   * 改成「整轨解码一次、编码一次」，边界接缝从 2N 处降到 0；视频仍 copy，画质零损失。
+   * 全季参数完全一致时保持原样直拼；有缺音轨的集也不走该路径（保守兜底）。 */
+  const anyAudioWork = plan.steps.some(s => s.audio || s.trim || s.sync);
+  const totalDur = infos.every(x => (Number(x.duration) || 0) > 0)
+    ? infos.reduce((a, x) => a + (Number(x.duration) || 0), 0) : 0;
+  const wholeAudio = anyAudioWork && totalDur > 0 && infos.every(i => !!i.audioCodec);
   const concatArgs = ['-copyts', '-protocol_whitelist', 'file,pipe', '-f', 'concat', '-safe', '0', '-i', listFile,
-    '-map', '0:v:0', '-map', '0:a:0?', '-sn', '-dn', '-c', 'copy',
-    '-video_track_timescale', String(plan.timescale), '-movflags', '+faststart'];
+    '-map', '0:v:0', '-sn', '-dn'];
+  if (wholeAudio) {
+    report(66, '音频整轨重编码（消除集边界接缝）');
+    concatArgs.push('-map', '0:a:0?', '-c:v', 'copy',
+      '-c:a', 'aac', '-profile:a', 'aac_low', '-b:a', '128k',
+      '-ar', String(targetSR), '-ac', String(targetCh),
+      '-af', `aresample=${targetSR}:async=1:first_pts=0`,
+      // 显式裁到视频总时长：整轨编码的 priming 会让音轨比画面长几十毫秒
+      '-t', totalDur.toFixed(3));
+  } else {
+    concatArgs.push('-map', '0:a:0?', '-c', 'copy');
+  }
+  concatArgs.push('-video_track_timescale', String(plan.timescale), '-movflags', '+faststart');
   // h264/hevc 产物一律 avc3/hev1（in-band SPS/PPS）：concat 后播放器 seek 到任何段都按帧内参数解码，杜绝快进花屏/乱码
   if (majority.videoCodec === 'h264') concatArgs.push('-tag:v', 'avc3');
   else if (majority.videoCodec === 'hevc') concatArgs.push('-tag:v', 'hev1');
@@ -918,7 +947,9 @@ function retryFailedEpisodes(id, owner, isAdmin) {
   t.failedEpisodes = [];
   t.error = '';
   for (const f of failed) {
-    const ep = t.episodes[f.index - 1];
+    /* f.index 是真实集号（可能是 16），不是数组下标 —— 以前写 index-1，
+     * 只下 16/19/21 那种任务会取到 undefined，点「重试失败集」等于什么都没做。 */
+    const ep = t.episodes.find(e => Number(e && e.index) === Number(f.index));
     if (ep) { ep._ok = false; ep.failed = false; ep.error = ''; }
   }
   t.status = 'queued';
@@ -970,6 +1001,9 @@ function publicTask(t) {
     output: t.output, progress: t.progress, error: t.error,
     failedEpisodes: failedEpisodes.map(f => ({ index: f.index, error: f.error || '' })),
     createdAt: t.createdAt, updatedAt: t.updatedAt,
+    /* 真实集号列表（只下 16/19/21 时就是 16,19,21）。
+     * 客户端拼 NAS 文件地址必须用它，别拿 episodeCount 从 1 数到 N。 */
+    episodes: t.episodes.map(e => Number(e && e.index) || 0).filter(n => n > 0),
     episodeCount: t.episodes.length, owner: t.owner,
     upload: t.upload || null,
     percent: p.percent || (t.status === 'done' ? 100 : 0),

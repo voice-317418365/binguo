@@ -129,10 +129,9 @@ final class HongguoRepository {
      * 播放地址缓存：同一集反复点开不该每次都重新签名取流（一次 resolve = 拼设备参数 +
      * 签名 + 一次 HTTPS 往返）。红果地址带时效，只留 8 分钟，过期重新解析。
      *
-     * 取流顺序对齐上游 0.28.15：本机签名直连优先，失败才落回 RelayPlayback。
-     * 我方 RelayPlayback 第一步是后端 /api/web/hongguo/stream，而后端要 spawn ffmpeg
-     * 把整集转封装完才 sendFile（一集几十秒，且只有同名临时文件存在时才快）；直连拿到
-     * 的是 CENC 密文，RemoteVideo 边读边解，地址到手就能出画，首播不用等转封装。
+     * 取流顺序对齐上游 0.28.60+：v5 匿名注册直连优先，失败才落回 RelayPlayback。
+     * 直连拿到的是 CENC 密文，RemoteVideo 边读边解，地址到手就能出画，首播不用等后端
+     * 转封装（后端 spawn ffmpeg 把整集转封装完才 sendFile，一集几十秒）。
      */
     private static final long EPISODE_TTL_MS = 8 * 60 * 1000L;
     private static final LruCache<String, JSONObject> episodes = new LruCache<>(32);
@@ -167,14 +166,15 @@ final class HongguoRepository {
     }
 
     /*
-     * 直连优先取流（对齐上游 0.28.15 的 resolveStream）。
+     * 取流对齐上游 0.28.60+：单路「匿名注册 + Android v5 签名」（HongguoDirect）。
      *
-     * HongguoSigner 在本机完成 device_register + X-Argus/X-Ladon/X-Gorgon 签名，直接拿
-     * fqnovel 的 CDN 直链（CENC 密文），地址到手就能出画，首播不用等后端转封装。
+     * 2026-10-27 站方关掉了 551 Argus/Ladon（固定 HTTP 200 + 空正文），2026-11 又要求
+     * v5 Medusa/Helios，旧的 HongguoSigner（551）已经拿不到地址。现在直连走 HongguoDirect，
+     * 单路 9 秒硬预算，失败立刻报原因。
      *
-     * 放到独立线程里做是为了给「空响应风控」设 6 秒上限：签名器内部本身有重试与换设备
-     * 轮换，风控时可能拖到十几秒，不能让它卡住详情页/播放页的请求线程。
-     * 连续两次失败就冷却 5 分钟、期间直接走后端，避免每一集都白等 6 秒。
+     * 与上游唯一差别：v5 失败时仍退回我方后端 RelayPlayback 兜底（upstream.stream）。
+     * 上游把这层删了（注明后端永久 502），但保留它不影响 v5 成功路径，只是多一道保险，
+     * 避免 v5 在我方环境异常时红果彻底播不出来。
      */
     private static final java.util.concurrent.ExecutorService RESOLVE_POOL =
             java.util.concurrent.Executors.newFixedThreadPool(3, runnable -> {
@@ -182,32 +182,29 @@ final class HongguoRepository {
                 thread.setDaemon(true);
                 return thread;
             });
-    private static final java.util.concurrent.atomic.AtomicInteger DIRECT_MISSES =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static volatile long directHoldUntil = 0L;
-    private static final long DIRECT_COOLDOWN_MS = 5 * 60 * 1000L;
-    private static final long DIRECT_TIMEOUT_MS = 6000L;
+    private static final long FRESH_TIMEOUT_MS = 9000L;
 
     private StreamInfo resolveStream(String id, String vid) throws Exception {
-        if (System.currentTimeMillis() >= directHoldUntil) {
-            java.util.concurrent.Callable<StreamInfo> call =
-                    () -> com.hongguotv.core.HongguoSigner.INSTANCE.resolve(vid);
-            java.util.concurrent.Future<StreamInfo> task = RESOLVE_POOL.submit(call);
-            try {
-                StreamInfo direct = task.get(DIRECT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
-                if (direct != null && direct.getUrl() != null && direct.getUrl().startsWith("http")) {
-                    DIRECT_MISSES.set(0);
-                    return direct;
-                }
-            } catch (Exception error) {
-                task.cancel(true);
-                // 第一次失败不立刻判死：偶发空响应重试一次还是很快的
-                if (DIRECT_MISSES.incrementAndGet() >= 2) {
-                    directHoldUntil = System.currentTimeMillis() + DIRECT_COOLDOWN_MS;
-                    DIRECT_MISSES.set(0);
-                }
+        java.util.concurrent.Future<StreamInfo> task =
+                RESOLVE_POOL.submit(() -> HongguoDirect.fetch(vid));
+        try {
+            StreamInfo info = task.get(FRESH_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (info != null && info.getUrl() != null && info.getUrl().startsWith("http")) {
+                return info;
             }
+            android.util.Log.w("Veyra", "红果 v5 未返回地址，退回后端兜底");
+        } catch (java.util.concurrent.TimeoutException error) {
+            task.cancel(true);
+            android.util.Log.w("Veyra", "红果 v5 取址超时，退回后端兜底");
+        } catch (java.util.concurrent.ExecutionException error) {
+            Throwable cause = error.getCause() == null ? error : error.getCause();
+            android.util.Log.w("Veyra", "红果 v5 取址失败，退回后端兜底: " + cause);
+        } catch (InterruptedException error) {
+            task.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new java.io.IOException("取址被取消");
         }
+        /* v5 这条路不通时的最后降级：保持我方原有后端链路，不让红果直接变成播不了。 */
         return upstream.stream(id, vid, 1080);
     }
 

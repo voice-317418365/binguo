@@ -161,6 +161,21 @@ function toast(message, info = false) {
   toastTimer = setTimeout(() => toastHost.classList.remove('visible'), 3000);
 }
 
+/**
+ * 系统 Toast：APK 内嵌页面走原生（屏幕底部的小黑条），浏览器 / 网页版回退到页面浮层。
+ * 页面自带的 #toast-host 固定在顶部 75px，位置离手远、又容易被顶栏压住；
+ * 「已开始下载 N 集」这种交给后台的确认提示，用系统 toast 更符合手机习惯。
+ */
+function nativeToast(message, info = false) {
+  try {
+    if (window.AndroidHost && typeof window.AndroidHost.toast === 'function') {
+      window.AndroidHost.toast(String(message == null ? '' : message));
+      return;
+    }
+  } catch (ignore) { /* 桥不可用就走页面提示 */ }
+  toast(message, info);
+}
+
 let finishConfirmation;
 function closeConfirmation(accepted) {
   if (confirmOverlay.hidden) return;
@@ -1412,7 +1427,9 @@ function backfillNasCovers(nasTasks) {
 
 // 仅当任务状态真正变化时才重建列表，避免滑动落位后无谓重绘（那一闪）。
 function downloadListSignature(phone, nas) {
-  const red = t => [t.id, t.status, t.percent, t.doneCount, t.totalCount, t.nasTaskId, t.cover].map(v => v == null ? '' : v).join('|');
+  // detail 也要进签名：合并阶段百分比会长时间停在同一位数，只有"第 63 集/第 64 集"这类文字在变，
+  // 不带上它就轮询不重绘，进度文字定在打开那一刻。
+  const red = t => [t.id, t.status, t.percent, t.doneCount, t.totalCount, t.nasTaskId, t.cover, t.detail].map(v => v == null ? '' : v).join('|');
   // 远程传输进度也算进签名：否则 2s 轮询时列表不重绘，传输百分比永远停在打开那一瞬
   const remote = [...remoteJobs.values()]
     .map(j => [j.taskId, j.status, j.percent, j.serverName, j.error].map(v => v == null ? '' : v).join('|'))
@@ -1580,7 +1597,10 @@ function coverForTask(task) {
 }
 
 function downloadTaskRow(task, kind) {
-  const running = task.status === 'running';
+  // NAS 任务的状态是 queued/downloading/merging，不是 'running'；
+  // 以前只认 'running'，NAS 合并中会被当成"已结束"，按钮和状态文案全错。
+  const running = downloadTaskActive(task);
+  const merging = task.status === 'merging';
   const statusText = downloadStatusText(task, kind);
   // 下载行来源：本机 / NAS / 同一账号下在线设备（电脑、电视、另一台手机）
   const remoteKind = kind === 'desktop' || kind === 'tv' || kind === 'android';
@@ -1600,7 +1620,8 @@ function downloadTaskRow(task, kind) {
   const output = task.output && (task.output.startsWith('content://') || task.output.startsWith('file://'))
     ? ((task.detail || '').includes('已合并') ? '已保存合并后的完整视频' : '已保存到系统下载目录')
     : task.output || '';
-  const cancelBtn = running ? `<button type="button" class="dl-cancel" data-dl-cancel="${kind}" data-dl-id="${esc(task.id)}">取消</button>` : '';
+  // 合并中不给取消：后端删任务会把分集目录整个 rm，正在被 ffmpeg 读的文件会中途消失
+  const cancelBtn = running && !merging ? `<button type="button" class="dl-cancel" data-dl-cancel="${kind}" data-dl-id="${esc(task.id)}">取消</button>` : '';
   const retryBtn = !running && kind === 'phone' && (task.status === 'failed' || task.status === 'canceled') && !(task.error || '').includes('合并失败')
     ? `<button type="button" class="dl-cancel dl-retry" data-dl-retry="phone" data-dl-id="${esc(task.id)}">重试</button>` : '';
   const failedList = task.failedEpisodes || [];
@@ -1625,7 +1646,15 @@ function downloadTaskRow(task, kind) {
   const errLog = task.error || (failedState ? (task.debug || '') : '');
   const errBlock = errLog
     ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc(errLog.replace(/\n/g, '\\n'))}" title="点击复制全部日志">${task.error ? task.error.split('\n').slice(0, 4).map(esc).join('<br>') : '<span class="dl-log-link">复制合并日志</span>'}</span>` : '';
-  const detailHint = task.detail && (/片/.test(task.detail) || task.detail.includes('合并中')) ? ` · <span class="dl-detail-hint">${esc(task.detail)}</span>` : '';
+  const detailText = (task.detail || '').trim();
+  // 进行中的任务把后端给的阶段文字原样透出来（"按多数派转码音轨 第 63 集"、"音频整轨重编码 42%"），
+  // 跟 WebUI 里看到的一致；合并阶段这段直接占 meta 行，不重复挂 hint。
+  const detailHint = detailText && !merging && (running || /片/.test(detailText))
+    ? ` · <span class="dl-detail-hint">${esc(detailText)}</span>` : '';
+  // meta 中段：合并中显示后端阶段；下载中留空（阶段文字由 detailHint 出），避免出现「·  ·」
+  const metaMid = merging
+    ? (detailText || '合并中')
+    : (task.doneCount === task.totalCount && !running ? '已下载全部集' : (failedList.length ? `失败 ${failedList.length} 集` : ''));
   const playAttr = kind === 'nas' ? 'data-dl-play-nas' : remoteKind ? 'data-dl-play-device' : 'data-dl-play';
   const playHint = kind === 'nas' ? '播放 NAS 成品' : remoteKind ? `播放${deviceLabel}上的成品` : '本地播放';
   const playTile = `<button type="button" class="download-cover" ${playAttr}="${esc(task.id)}" aria-label="${playHint}《${esc(task.title || '未知剧集')}》">
@@ -1633,7 +1662,7 @@ function downloadTaskRow(task, kind) {
     <span class="download-cover-hint">${playHint}</span></button>`;
   return `<div class="download-card">${playTile}<div class="download-task">
     <div class="download-task-head"><strong>${esc(task.title || '未知剧集')}</strong>${sourceBadge}<span class="dl-status ${running ? 'is-running' : ''}">${statusText}</span></div>
-    <div class="download-task-meta">${task.doneCount}/${task.totalCount} 集 · ${task.doneCount === task.totalCount && task.status !== 'running' ? '已下载全部集' : (failedList.length ? `失败 ${failedList.length} 集` : '')}${srcNote ? ` · <b class="dl-src-note">${esc(srcNote)}</b>` : ''}${detailHint}${remoteText ? ` · <span class="dl-remote-note ${remoteJob.status}">${esc(remoteText)}</span>` : ''}</div>
+    <div class="download-task-meta">${task.doneCount}/${task.totalCount} 集${metaMid ? ` · ${esc(metaMid)}` : ''}${srcNote ? ` · <b class="dl-src-note">${esc(srcNote)}</b>` : ''}${detailHint}${remoteText ? ` · <span class="dl-remote-note ${remoteJob.status}">${esc(remoteText)}</span>` : ''}</div>
     <div class="download-track"><i style="width:${Math.max(0, Math.min(100, Number(task.percent) || 0))}%"></i></div>
     ${mergeHint}
     <div class="download-task-foot">${output ? `<span class="dl-output">${esc(output)}</span>` : ''}${failedInfo}${errBlock}${transferCancel}${mergeBtn}${retryFailedBtn}${retryBtn}${cancelBtn}${deleteBtn}</div>
@@ -1658,6 +1687,9 @@ function downloadStatusText(task, kind) {
     if (d.includes('拉取')) return d.replace(/已从 NAS /, '从 NAS ');
     return '等待 NAS 下载';
   }
+  // NAS 端合并：状态码直接就是 merging，具体在做什么看 detail（逐集转码 / 音频整轨重编码 / 校验）
+  if (task.status === 'merging') return '合并中';
+  if (task.status === 'queued') return '排队中';
   if (task.status === 'ready') return failedCount > 0 ? `已下载 · 失败${failedCount}集` : '已下载 · 待合并';
   if (task.status === 'done') {
     if (kind === 'nas') return '已合并 · 1 个视频';
@@ -1683,6 +1715,7 @@ const DOWNLOAD_RESOLVE_CONCURRENCY = 3;   // 串行太慢、全量并发会把�
 const DOWNLOAD_RESOLVE_TIMEOUT_MS = 15000;
 let downloadMode = null;          // 'episodes' | 'target' | 'parsing'
 const downloadSelection = new Set();
+let downloadGridScroll = 0;       // 选集网格的滚动位置，跨重绘保留
 let downloadParsing = false;
 let downloadCancelled = false;
 let downloadJobId = 0;   // 每次提交一个令牌，防止「取消旧批 → 立刻重开」时旧解析结果误提交
@@ -1731,6 +1764,7 @@ function showDownloadSheet() {
   if (!episodes.length) { toast('该内容暂无可选集', true); return; }
   downloadMode = 'episodes';
   downloadSelection.clear();
+  downloadGridScroll = 0;   // 重新打开弹层才回到顶部，重绘时保持原位
   downloadParsing = false;
   downloadCancelled = false;
   downloadOverlay.hidden = false;
@@ -1757,6 +1791,8 @@ var manageDeviceId = '';
 function renderDownloadSheet() {
   const sheet = document.getElementById('download-sheet');
   if (!sheet) return;
+  const prevGrid = sheet.querySelector('.download-sheet-grid');
+  if (prevGrid) downloadGridScroll = prevGrid.scrollTop;
   const episodes = asArray(state.detail.episodes);
   if (downloadMode === 'parsing') {
     sheet.innerHTML = `<div class="download-parsing">
@@ -1833,8 +1869,33 @@ function renderDownloadSheet() {
       const on = downloadSelection.has(n);
       return `<label class="dl-ep ${on ? 'checked' : ''}" data-dl-ep="${n}"><span>${n}</span></label>`;
     }).join('')}</div>
-    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">取消</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? '' : 'disabled'}>下载 ${checked ? checked + ' 集' : ''}</button></div>
+    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">取消</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? '' : 'disabled'}>${checked ? `下载 ${checked} 集` : '下载'}</button></div>
     <p class="dl-batch-note">不限集数，选多少下多少；集数越多准备播放地址越久，准备过程会显示实时进度。</p>`;
+  // 列表刚重建时还没有布局高度，直接设 scrollTop 会被夹成 0，等一帧再恢复
+  const gridNow = sheet.querySelector('.download-sheet-grid');
+  if (gridNow && downloadGridScroll > 0) {
+    requestAnimationFrame(() => { gridNow.scrollTop = downloadGridScroll; });
+  }
+}
+
+/** 只刷「已选 X/Y」和下载按钮状态，不重建列表 DOM。
+ *  整块重绘会把 .download-sheet-grid 的滚动位置清零：一季几十集时，
+ *  用户滑到第 80 集点一下选中，界面立刻弹回最前面，等于白滑。 */
+function syncDownloadSheetSelection() {
+  const episodes = asArray(state.detail && state.detail.episodes);
+  const total = episodes.length;
+  let checked = 0;
+  for (const ep of episodes) if (downloadSelection.has(Number(ep.number) || 0)) checked++;
+  const count = document.querySelector('#download-sheet .dl-counter');
+  if (count) count.textContent = `已选 ${checked}/${total} 集`;
+  const confirm = document.querySelector('#download-sheet [data-dl-confirm]');
+  if (confirm) {
+    confirm.disabled = checked === 0;
+    confirm.textContent = checked ? `下载 ${checked} 集` : '下载';
+  }
+  // 全不选的时候确认键文案要退回「下载」，不能留一个空格的「下载 」
+  const allBtn = document.querySelector('#download-sheet [data-dl-all]');
+  if (allBtn) allBtn.textContent = total && checked === total ? '清空' : '全选';
 }
 
 async function resolveEpisodesForDownload(episodes, onProgress) {
@@ -1914,13 +1975,13 @@ async function submitDownloadTo(target, remoteId) {
         deviceId: String(remoteId || '')
       });
       hideDownloadSheet();
-      toast(`已推送 ${episodes.length} 集到设备，马上开始下载`);
+      nativeToast(`已推送 ${episodes.length} 集到设备，马上开始下载`);
       return;
     }
     if (target === 'nas') {
       // NAS 自主解析：只推 seriesId/title/集数，由后端调红果 App 接口取流（最高画质档）
       await api('nas-download-start', { source: contentSource, title: state.detail.title, seriesId: String(state.detail.seriesId || state.detail.id), episodes, cover: state.detail.cover || '' });
-      toast(`已提交 ${episodes.length} 集到 NAS，可在「我的下载」查看进度`);
+      nativeToast(`已提交 ${episodes.length} 集到 NAS，可在「我的下载」查看进度`);
     } else {
       // 下载到手机 / 下载到远程服务器。
       // 判定依据优先级：① 当前详情页实际内容源（detail.source，与详情/播放完全一致，杜绝全局模式脱节）；
@@ -1951,7 +2012,7 @@ async function submitDownloadTo(target, remoteId) {
           ? `；另有 ${failed.length} 集未取到地址已跳过（第 ${failed.slice(0, 5).join('、')}${failed.length > 5 ? ' 等' : ''} 集），可稍后单独重试`
           : '';
         await api('download-start', { source: sourceNow, title: state.detail.title, episodes: resolved, debug, cover: state.detail.cover || '', remoteId: targetRemote });
-        toast(debug
+        nativeToast(debug
           ? `调试模式已开始（${resolved.length} 集），分片下完会导出调试包${skipNote}`
           : targetRemote
             ? `已开始下载 ${resolved.length} 集，完成后会自动上传到服务器${skipNote}`
@@ -4892,14 +4953,21 @@ document.addEventListener('click', async event => {
     const allSelected = episodes.length && episodes.every(n => downloadSelection.has(n));
     downloadSelection.clear();
     if (!allSelected) episodes.forEach(n => downloadSelection.add(n));
-    renderDownloadSheet();
+    // 同样不重绘：逐格切 class，滚动位置原地不动
+    document.querySelectorAll('#download-sheet .dl-ep').forEach(cell => {
+      cell.classList.toggle('checked', downloadSelection.has(Number(cell.dataset.dlEp)));
+    });
+    syncDownloadSheetSelection();
     return;
   }
   if (event.target.closest('[data-dl-ep]')) {
-    const n = Number(event.target.closest('[data-dl-ep]').dataset.dlEp);
+    const cell = event.target.closest('[data-dl-ep]');
+    const n = Number(cell.dataset.dlEp);
     if (downloadSelection.has(n)) downloadSelection.delete(n);
     else downloadSelection.add(n);
-    renderDownloadSheet();
+    // 只动这一格 + 顶部计数，绝不重绘列表（重绘 = 滚动条弹回顶部）
+    cell.classList.toggle('checked', downloadSelection.has(n));
+    syncDownloadSheetSelection();
     return;
   }
   if (event.target.closest('[data-dl-play]')) {

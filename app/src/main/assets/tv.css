@@ -26,13 +26,10 @@
   --halo:rgba(8,10,13,.92);
   --glow:rgba(200,155,60,.22);
   --pill:rgba(255,255,255,.12);
-  --rail-bg:rgba(255,255,255,.07);
-  --rail-ink:#E7E9EB;
   --chip-bg:rgba(255,255,255,.10);
   --chip-ink:#E7E9EB;
   --scrim:rgba(8,10,13,.62);
   --drawer:rgba(6,8,11,.60);
-  --rail-panel:#17181A;
 }
 
 /* ---------------- 主题 ----------------
@@ -46,10 +43,8 @@ body[data-tv-theme="pink"]{
   --accent:#8E0B3F;--accent-ink:#FFFFFF;--accent-bright:#FFD1E1;
   --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
   --glow:rgba(255,255,255,.40);--pill:rgba(0,0,0,.14);
-  --rail-bg:rgba(0,0,0,.14);--rail-ink:#FFFFFF;
   --chip-bg:rgba(0,0,0,.15);--chip-ink:#FFFFFF;
   --scrim:rgba(255,250,252,.80);--drawer:rgba(255,238,245,.70);
-  --rail-panel:#FF5C93;
 }
 body[data-tv-theme="red"]{
   --bg:#F44336;--bg-2:#F55B4F;--panel:rgba(0,0,0,.12);--panel-2:rgba(0,0,0,.22);
@@ -57,10 +52,8 @@ body[data-tv-theme="red"]{
   --accent:#6E0C06;--accent-ink:#FFFFFF;--accent-bright:#FFC9C4;
   --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
   --glow:rgba(255,255,255,.34);--pill:rgba(0,0,0,.14);
-  --rail-bg:rgba(0,0,0,.14);--rail-ink:#FFFFFF;
   --chip-bg:rgba(0,0,0,.15);--chip-ink:#FFFFFF;
   --scrim:rgba(255,249,248,.80);--drawer:rgba(255,233,231,.70);
-  --rail-panel:#EC3B2E;
 }
 body[data-tv-theme="yellow"]{
   --bg:#FFC107;--bg-2:#FFCB2B;--panel:rgba(0,0,0,.10);--panel-2:rgba(0,0,0,.20);
@@ -68,10 +61,8 @@ body[data-tv-theme="yellow"]{
   --accent:#7A4E00;--accent-ink:#FFFFFF;--accent-bright:#FFEBA8;
   --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
   --glow:rgba(255,255,255,.40);--pill:rgba(0,0,0,.14);
-  --rail-bg:rgba(0,0,0,.12);--rail-ink:#FFFFFF;
   --chip-bg:rgba(0,0,0,.13);--chip-ink:#FFFFFF;
   --scrim:rgba(255,252,241,.82);--drawer:rgba(255,247,220,.72);
-  --rail-panel:#F5B800;
 }
 body[data-tv-theme="green"]{
   --bg:#8BC34A;--bg-2:#97C95C;--panel:rgba(0,0,0,.10);--panel-2:rgba(0,0,0,.20);
@@ -79,10 +70,8 @@ body[data-tv-theme="green"]{
   --accent:#255A10;--accent-ink:#FFFFFF;--accent-bright:#DDF5C9;
   --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
   --glow:rgba(255,255,255,.36);--pill:rgba(0,0,0,.14);
-  --rail-bg:rgba(0,0,0,.12);--rail-ink:#FFFFFF;
   --chip-bg:rgba(0,0,0,.13);--chip-ink:#FFFFFF;
   --scrim:rgba(251,255,247,.80);--drawer:rgba(240,250,230,.72);
-  --rail-panel:#7FBA3C;
 }
 body[data-tv-theme="blue"]{
   --bg:#2196F3;--bg-2:#389FF4;--panel:rgba(0,0,0,.12);--panel-2:rgba(0,0,0,.22);
@@ -90,10 +79,8 @@ body[data-tv-theme="blue"]{
   --accent:#08335F;--accent-ink:#FFFFFF;--accent-bright:#CFE4FF;
   --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
   --glow:rgba(255,255,255,.34);--pill:rgba(0,0,0,.14);
-  --rail-bg:rgba(0,0,0,.13);--rail-ink:#FFFFFF;
   --chip-bg:rgba(0,0,0,.14);--chip-ink:#FFFFFF;
   --scrim:rgba(248,252,255,.80);--drawer:rgba(232,244,255,.72);
-  --rail-panel:#1C8CE8;
 }
 body[data-tv-theme="purple"]{
   --bg:#9C27B0;--bg-2:#A836BA;--panel:rgba(0,0,0,.14);--panel-2:rgba(255,255,255,.24);
@@ -101,10 +88,8 @@ body[data-tv-theme="purple"]{
   --accent:#FFD9F2;--accent-ink:#3A0B44;--accent-bright:#F0C7FF;
   --focus:#FFFFFF;--halo:rgba(0,0,0,.55);
   --glow:rgba(255,255,255,.26);--pill:rgba(0,0,0,.16);
-  --rail-bg:rgba(0,0,0,.16);--rail-ink:#FFFFFF;
   --chip-bg:rgba(0,0,0,.16);--chip-ink:#FFFFFF;
   --scrim:rgba(60,14,70,.68);--drawer:rgba(30,6,36,.60);
-  --rail-panel:#96249F;
 }
 /* 高性能模式：底色压到近黑，让海报透出来；其余变量跟主题黑一致。
    背景图由 body[data-backdrop="poster"] 打开，低模糊，看得清海报内容。 */
@@ -114,10 +99,8 @@ body[data-tv-theme="cinema"]{
   --accent:#c89b3c;--accent-ink:#231a06;--accent-bright:#ffd277;
   --focus:#FFFFFF;--halo:rgba(8,10,13,.92);
   --glow:rgba(200,155,60,.16);--pill:rgba(255,255,255,.12);
-  --rail-bg:rgba(255,255,255,.07);--rail-ink:#FFFFFF;
   --chip-bg:rgba(255,255,255,.10);--chip-ink:#FFFFFF;
   --scrim:rgba(8,10,13,.62);--drawer:rgba(6,8,11,.60);
-  --rail-panel:#12161B;
 }
 /* 简洁白：唯一一套白底深字 */
 body[data-tv-theme="clean"]{
@@ -126,10 +109,8 @@ body[data-tv-theme="clean"]{
   --accent:#1F6FEB;--accent-ink:#FFFFFF;--accent-bright:#7FB0FF;
   --focus:#1F6FEB;--halo:rgba(255,255,255,.92);
   --glow:rgba(31,111,235,.10);--pill:rgba(20,24,29,.08);
-  --rail-bg:rgba(20,24,29,.06);--rail-ink:#3C4653;
   --chip-bg:rgba(20,24,29,.07);--chip-ink:#3C4653;
   --scrim:rgba(255,255,255,.82);--drawer:rgba(248,250,252,.78);
-  --rail-panel:#FFFFFF;
 }
 
 /* 彩色底 + 白字：加一层极淡的暗投影，远看不会糊进底色里。
@@ -150,15 +131,20 @@ body[data-backdrop="poster"]{
   --accent:var(--accent-bright,#ffd277);--accent-ink:#14181d;
   --focus:#FFFFFF;--halo:rgba(8,10,13,.92);
   --glow:rgba(255,210,119,.18);--pill:rgba(255,255,255,.14);
-  --rail-bg:rgba(255,255,255,.10);--rail-ink:#F2F3F5;
   --scrim:rgba(8,10,13,.62);--drawer:rgba(4,6,9,.56);
-  --rail-panel:#0b0e13;
 }
 
 [hidden]{display:none !important}
-/* 浏览器默认的 :focus 环会套在整张卡上（连剧名一起框住），
-   焦点样式统一由 .is-focused 负责，这里把默认环关掉 */
-[data-focusable]:focus{outline:none}
+/* 手指点按钮时 Android WebView 会画一块“触摸高亮”（-webkit-tap-highlight-color），
+   它是按盒子的矩形填的，不认 border-radius —— 圆头像、圆角胶囊外面就会多出
+   一圈硬邦邦的方框/方块，遥控器走 .is-focused 反而不受影响。这里直接关掉，
+   平板上点哪儿都不会再冒出矩形。 */
+*{-webkit-tap-highlight-color:transparent}
+*:focus{outline:none !important}
+[data-focusable]:focus{outline:none !important}
+/* 分开写：老 WebView 不认 :focus-visible，写在同一个选择器组里会把整条规则作废 */
+*:focus-visible{outline:none !important}
+*:focus-within{outline:none !important}
 *{box-sizing:border-box}
 
 html{font-size:10px;height:100%}
@@ -211,64 +197,89 @@ body[data-backdrop="poster"] #tv-bg img{opacity:1}
 }
 body[data-backdrop="poster"] #tv-bg .veil{opacity:1}
 
-/* 侧栏呼出 = 抽屉打开：整页压暗，焦点只在左边那一列图标上。
-   只压左边一条的话，图标会直接叠在标题和分类条上，看起来像没对齐。 */
-/* 不做整屏遮罩：主界面颜色保持不变，只靠侧栏自己亮一档区分层次 */
-#rail-veil{display:none}
-
-/* ---------------- 左侧图标导航（默认收起） ----------------
-   内容页占满整屏；侧栏平时整个滑出屏幕外，只有遥控器在最左一列继续按左
-   才把它拉出来。拉出来时焦点直接落到当前页的图标上，按右/返回收回。 */
-#rail{
-  position:absolute;left:0;top:0;bottom:0;width:9.4rem;z-index:5;
-  padding:4.4rem 0 2.6rem;
-  display:flex;flex-direction:column;align-items:center;
-  background:transparent;
-  transform:translateX(-140%);opacity:0;pointer-events:none;
-  transition:transform .18s ease-out,opacity .18s linear;
+/* ---------------- 顶栏：分类胶囊 + 三个入口（常驻吸顶） ----------------
+   搜索 / 最近 / 设置三颗按钮在右边，跟短剧/漫剧/热播榜那排胶囊同一条水平线、
+   上下沿齐平（都是 5rem 高）。顶栏放在 #stage 外面，遥控器往下按时它不动；
+   海报往上滚到它下面一点点就开始渐隐（#stage 的 mask 负责）。
+   这一层自己不铺底色 —— 底色由胶囊和按钮各自带（见下）。 */
+#topbar{
+  position:absolute;left:0;right:0;top:0;height:11.4rem;z-index:4;
+  padding:6rem 5.2rem 0 4.6rem;
+  display:flex;align-items:flex-start;
+  /* 顶栏不铺整条底色：底色一铺，屏幕上就是「黑突突一块」，跟内容割裂。
+     每个胶囊 / 每颗按钮各自带 --bg-2 实色底，字压在实色上，不会发虚；
+     中间那几条缝透出海报是故意的，那是它跟内容连着的地方。 */
+}/* 胶囊左对齐排开。这里不能 overflow:hidden —— 选中胶囊的焦点环是往外扩的
+   box-shadow，裁掉就成了「上下两条边被切平」，又回到那个硬框手感。
+   分类多到放不下时宁可压到工具条下面，工具条自己在更上层，不会被盖住。 */
+#topbar .chips,
+#topbar .tabs{
+  display:flex;align-items:center;
+  flex:1 1 auto;min-width:0;
+  margin:0;
 }
-/* 呼出时是一块不透明的竖栏：图标不会再压在标题/海报上重影 */
-body.rail-open #rail{
-  transform:translateX(0);opacity:1;pointer-events:auto;
-  background:var(--rail-panel);
-  /* 叠一层 10% 白把侧栏提亮，比主界面亮一点点就够，不再压暗整页 */
-  background-image:linear-gradient(rgba(255,255,255,.10),rgba(255,255,255,.10));
-  box-shadow:0 0 3rem 0 rgba(0,0,0,.26);
+/* 胶囊用不透明的底：--chip-bg 只有 10% 白，压在渐变背景上字发虚。
+   --bg-2 是各主题的不透明纯色，比底色亮/暗一档，气泡轮廓清楚，后面也透不过来。 */
+#topbar .chip{
+  margin:0 1.2rem 0 0;flex:0 0 auto;
+  background:var(--bg-2);
 }
-.rail-item{
-  width:5.2rem;height:5.2rem;border-radius:1.5rem;
-  margin-bottom:1.2rem;
-  display:flex;align-items:center;justify-content:center;
-  color:var(--rail-ink);background:var(--rail-bg);
+/* #topbar .chip 的优先级高于 .chip.is-active，选中态要单独补回来（否则选中项也变成灰底） */
+#topbar .chip.is-active{background:var(--accent);color:var(--accent-ink)}
+#topbar .chip:last-child{margin-right:0}
+/* margin-left:auto 把它顶到最右：搜索页那行只有它一个，也靠右 */
+#tools{
+  position:relative;z-index:1;
+  display:flex;align-items:center;flex:0 0 auto;
+  margin-left:auto;
+}
+.tool{
+  position:relative;display:flex;align-items:center;justify-content:center;
+  width:6rem;height:5rem;border:0;padding:0;
+  border-radius:1.4rem;
+  background:var(--bg-2);color:var(--text);
   transition:background .12s linear,color .12s linear;
 }
-.rail-item svg{width:2.8rem;height:2.8rem;fill:currentColor}
-.rail-item.is-active{color:var(--text);background:var(--chip-bg)}
-.rail-item.is-focused{color:var(--accent-ink);background:var(--accent)}
-
-/* 左下角账号：只放头像，点开账号面板 */
-.rail-account{
-  margin-top:auto;width:5.2rem;height:5.2rem;border-radius:50%;
-  display:flex;align-items:center;justify-content:center;
-  background:var(--rail-bg);
-  overflow:hidden;
+.tool + .tool{margin-left:1rem}
+.tool svg{
+  width:2.6rem;height:2.6rem;
+  fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round;
 }
-.rail-account .avatar{
-  display:block;width:100%;height:100%;line-height:5.2rem;
-  text-align:center;font-size:2.2rem;font-weight:700;color:var(--text);
-  white-space:nowrap;overflow:hidden;
+.tool.is-focused{background:var(--accent);color:var(--accent-ink)}
+/* 焦点环贴着按钮自己的圆角走；外面再套一层硬矩形的话，手指按上去特别明显 */
+.tool::after{
+  content:"";position:absolute;inset:-.26rem;border-radius:1.66rem;
+  border:.24rem solid var(--focus);pointer-events:none;
+  opacity:0;transition:opacity .12s linear;
 }
-/* 手机端设置的头像：铺满整个圆 */
-.rail-account .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
-.rail-account.is-focused{background:var(--accent);outline:none;box-shadow:0 0 0 .3rem var(--focus)}
-.rail-account.is-focused .avatar{color:var(--accent-ink)}
+.tool.is-focused::after{opacity:1}
+/* 详情页整页是海报，不放顶栏；顶部留白和渐隐一起收掉 */
+body.route-detail #topbar{display:none}
+body.route-detail #stage{
+  padding-top:7.2rem;
+  -webkit-mask-image:none;mask-image:none;
+}
 
 /* ---------------- 主区域 ----------------
-   侧栏收起后内容铺满整屏，只留 4.6rem 的左边距给标题呼吸。 */
+   没有侧栏了，内容铺满整屏，只留 4.6rem 的左边距给标题呼吸。 */
 #stage{
   position:absolute;left:0;right:0;top:0;bottom:0;z-index:2;
   overflow-y:auto;overflow-x:hidden;
-  padding:4.2rem 5.2rem 8rem 4.6rem;
+  /* 关掉滚动锚定：换行时卡片重绘（封面、跑马灯）会让内核自己去调 scrollTop，
+     跟我们写死的整行值叠在一起，就是「框先跟着上一排升上去、再掉回来」。 */
+  overflow-anchor:none;
+  /* 顶栏是常驻图层（#topbar，top 6rem + 高 5rem），不占内容流，所以这里要
+     把它的高度让出来：6 + 5 之后再多留 4rem，第一排海报从 15rem 起。
+     多出来的这一截是给「选中放大」用的 —— 第一行卡片放大 1.08 倍后上沿会往上
+     吃 1.4rem 左右，留 5rem 之后它跟顶栏之间还有 3.5rem 的缝，不会齐平贴住。 */
+  padding:16.5rem 5.2rem 8rem 4.6rem;
+  /* 海报滚到顶栏下面一点开始渐隐：11.4rem（顶栏底 11rem 再往下 0.4rem）之前
+     完全透明，11.4 → 14.5rem 从透明渐变到实心，之后完全清晰。
+     渐变带宽 3.1rem，是一条雾带，不是拿刀切一下。
+     mask 跟着 #stage 这个盒子走、不跟内容走，所以滚多少都是同一条「消失线」。 */
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0,transparent 11.4rem,#000 14.5rem,#000 100%);
+  mask-image:linear-gradient(to bottom,transparent 0,transparent 11.4rem,#000 14.5rem,#000 100%);
   scrollbar-width:none;
 }
 #stage::-webkit-scrollbar{display:none}
@@ -311,7 +322,11 @@ body.page-windowed #stage{overflow:hidden}
   display:grid;
   grid-template-columns:repeat(6,minmax(0,1fr));
   grid-column-gap:1.6rem;
-  grid-row-gap:2.4rem;
+  /* 行距 1.6rem（原来 2.4rem）：一屏 1080 减去顶栏让位 16.5rem 之后，
+     两排卡（各 44.7rem）再加 2.4rem 的间距正好差 8px 装不下 ——
+     装不下的后果就是按一下下键整页要滚十几像素，第二排的槽位跟着漂。
+     收掉这 8px，两排完整落地，翻行才是干净的整行翻。 */
+  grid-row-gap:1.6rem;
   width:100%;max-width:100%;
 }
 /* min-width:0 必须写：grid 的 1fr 等于 minmax(auto,1fr)，长剧名会把
@@ -351,16 +366,17 @@ body.page-windowed #stage{overflow:hidden}
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   transition:transform .16s cubic-bezier(.22,.61,.36,1);
 }
-/* 焦点：整张海报放大 + 四边完整描边。
-   描边比上一版细一点、圆角放大到 1.1rem，跟海报本身同一个轮廓，不会出现
-   「圆角框套一个直角图」的割裂感。放大后海报下沿会多吃掉约 1.7rem，
-   剧名跟着下移 1.1rem，才不会贴着框底。 */
+/* 焦点：只靠「放大 + 投影」表达，不画描边框。
+   海报本身就是一块实色矩形，再套一圈高亮描边，等于在图上又画了一个框 ——
+   电视上离三米看，那圈框比海报还抢眼。放大 1.12 已经足够把焦点从一整排里
+   挑出来，投影负责把它从背景上托起来。
+   放大后海报下沿多吃掉约 2.6rem，剧名跟着下移 2.6rem，才不会贴着图底。 */
 .card.is-focused{z-index:8}
 .card.is-focused .art{
-  transform:scale(1.08);
-  box-shadow:0 0 0 .34rem var(--focus),0 .9rem 2.4rem rgba(0,0,0,.42);
+  transform:scale(1.12);
+  box-shadow:0 1.1rem 3rem rgba(0,0,0,.55);
 }
-.card.is-focused .name{transform:translateY(1.3rem)}
+.card.is-focused .name{transform:translateY(2.6rem)}
 /* 标题超长：选中后跑马灯。
    外层 .name 负责裁剪；内层 .mq-track 用 inline-block（电视端老内核也稳），
    里面是三段：文本 / 固定宽度的空档 / 文本。空档用真实 span 占位，

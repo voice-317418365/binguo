@@ -207,6 +207,16 @@ function toast(message, info = false) {
   toastHost.classList.add("visible");
   toastTimer = setTimeout(() => toastHost.classList.remove("visible"), 3e3);
 }
+function nativeToast(message, info = false) {
+  try {
+    if (window.AndroidHost && typeof window.AndroidHost.toast === "function") {
+      window.AndroidHost.toast(String(message == null ? "" : message));
+      return;
+    }
+  } catch (ignore) {
+  }
+  toast(message, info);
+}
 let finishConfirmation;
 function closeConfirmation(accepted) {
   if (confirmOverlay.hidden) return;
@@ -1354,7 +1364,7 @@ function backfillNasCovers(nasTasks) {
   }
 }
 function downloadListSignature(phone, nas) {
-  const red = (t) => [t.id, t.status, t.percent, t.doneCount, t.totalCount, t.nasTaskId, t.cover].map((v) => v == null ? "" : v).join("|");
+  const red = (t) => [t.id, t.status, t.percent, t.doneCount, t.totalCount, t.nasTaskId, t.cover, t.detail].map((v) => v == null ? "" : v).join("|");
   const remote = [...remoteJobs.values()].map((j) => [j.taskId, j.status, j.percent, j.serverName, j.error].map((v) => v == null ? "" : v).join("|")).join(";");
   return [...phone.map(red), ...nas.map(red), remote].join(",");
 }
@@ -1529,7 +1539,8 @@ function coverForTask(task) {
   return task.cover || loadTitleCovers().get(String(task.title || "")) || "";
 }
 function downloadTaskRow(task, kind) {
-  const running = task.status === "running";
+  const running = downloadTaskActive(task);
+  const merging = task.status === "merging";
   const statusText = downloadStatusText(task, kind);
   const remoteKind = kind === "desktop" || kind === "tv" || kind === "android";
   const deviceLabel = kind === "desktop" ? "\u7535\u8111" : kind === "tv" ? "\u7535\u89C6" : "\u624B\u673A";
@@ -1539,7 +1550,7 @@ function downloadTaskRow(task, kind) {
   // 「传到服务器」入口已下线：只在任务进行中保留取消传输与状态显示
   const transferCancel = remoteJob && (remoteJob.status === "running" || remoteJob.status === "queued") ? `<button type="button" class="dl-cancel" data-dl-transfer-cancel="${esc(remoteJob.id)}">\u53D6\u6D88\u4F20\u8F93</button>` : "";
   const output = task.output && (task.output.startsWith("content://") || task.output.startsWith("file://")) ? (task.detail || "").includes("\u5DF2\u5408\u5E76") ? "\u5DF2\u4FDD\u5B58\u5408\u5E76\u540E\u7684\u5B8C\u6574\u89C6\u9891" : "\u5DF2\u4FDD\u5B58\u5230\u7CFB\u7EDF\u4E0B\u8F7D\u76EE\u5F55" : task.output || "";
-  const cancelBtn = running ? `<button type="button" class="dl-cancel" data-dl-cancel="${kind}" data-dl-id="${esc(task.id)}">\u53D6\u6D88</button>` : "";
+  const cancelBtn = running && !merging ? `<button type="button" class="dl-cancel" data-dl-cancel="${kind}" data-dl-id="${esc(task.id)}">\u53D6\u6D88</button>` : "";
   const retryBtn = !running && kind === "phone" && (task.status === "failed" || task.status === "canceled") && !(task.error || "").includes("\u5408\u5E76\u5931\u8D25") ? `<button type="button" class="dl-cancel dl-retry" data-dl-retry="phone" data-dl-id="${esc(task.id)}">\u91CD\u8BD5</button>` : "";
   const failedList = task.failedEpisodes || [];
   const srcNote = task.detail && task.detail.includes("\uFF08") ? (task.detail.match(/（([^）]*)）/) || [])[1] || "" : "";
@@ -1553,7 +1564,9 @@ function downloadTaskRow(task, kind) {
   const failedState = task.status === "failed" || task.status === "canceled";
   const errLog = task.error || (failedState ? (task.debug || "") : "");
   const errBlock = errLog ? `<span class="dl-error" data-dl-copy="${esc(task.id)}" data-dl-log="${esc(errLog.replace(/\n/g, "\\n"))}" title="\u70B9\u51FB\u590D\u5236\u5168\u90E8\u65E5\u5FD7">${task.error ? task.error.split("\n").slice(0, 4).map(esc).join("<br>") : '<span class="dl-log-link">\u590D\u5236\u5408\u5E76\u65E5\u5FD7</span>'}</span>` : "";
-  const detailHint = task.detail && (/片/.test(task.detail) || task.detail.includes("\u5408\u5E76\u4E2D")) ? ` \xB7 <span class="dl-detail-hint">${esc(task.detail)}</span>` : "";
+  const detailText = (task.detail || "").trim();
+  const detailHint = detailText && !merging && (running || /片/.test(detailText)) ? ` \xB7 <span class="dl-detail-hint">${esc(detailText)}</span>` : "";
+  const metaMid = merging ? detailText || "\u5408\u5E76\u4E2D" : task.doneCount === task.totalCount && !running ? "\u5DF2\u4E0B\u8F7D\u5168\u90E8\u96C6" : failedList.length ? `\u5931\u8D25 ${failedList.length} \u96C6` : "";
   const playAttr = kind === "nas" ? "data-dl-play-nas" : remoteKind ? "data-dl-play-device" : "data-dl-play";
   const playHint = kind === "nas" ? "\u64AD\u653E NAS \u6210\u54C1" : remoteKind ? `\u64AD\u653E${deviceLabel}\u4E0A\u7684\u6210\u54C1` : "\u672C\u5730\u64AD\u653E";
   const playTile = `<button type="button" class="download-cover" ${playAttr}="${esc(task.id)}" aria-label="${playHint}\u300A${esc(task.title || "\u672A\u77E5\u5267\u96C6")}\u300B">
@@ -1561,7 +1574,7 @@ function downloadTaskRow(task, kind) {
     <span class="download-cover-hint">${playHint}</span></button>`;
   return `<div class="download-card">${playTile}<div class="download-task">
     <div class="download-task-head"><strong>${esc(task.title || "\u672A\u77E5\u5267\u96C6")}</strong>${sourceBadge}<span class="dl-status ${running ? "is-running" : ""}">${statusText}</span></div>
-    <div class="download-task-meta">${task.doneCount}/${task.totalCount} \u96C6 \xB7 ${task.doneCount === task.totalCount && task.status !== "running" ? "\u5DF2\u4E0B\u8F7D\u5168\u90E8\u96C6" : failedList.length ? `\u5931\u8D25 ${failedList.length} \u96C6` : ""}${srcNote ? ` \xB7 <b class="dl-src-note">${esc(srcNote)}</b>` : ""}${detailHint}${remoteText ? ` \xB7 <span class="dl-remote-note ${remoteJob.status}">${esc(remoteText)}</span>` : ""}</div>
+    <div class="download-task-meta">${task.doneCount}/${task.totalCount} \u96C6${metaMid ? ` \xB7 ${esc(metaMid)}` : ""}${srcNote ? ` \xB7 <b class="dl-src-note">${esc(srcNote)}</b>` : ""}${detailHint}${remoteText ? ` \xB7 <span class="dl-remote-note ${remoteJob.status}">${esc(remoteText)}</span>` : ""}</div>
     <div class="download-track"><i style="width:${Math.max(0, Math.min(100, Number(task.percent) || 0))}%"></i></div>
     ${mergeHint}
     <div class="download-task-foot">${output ? `<span class="dl-output">${esc(output)}</span>` : ""}${failedInfo}${errBlock}${transferCancel}${mergeBtn}${retryFailedBtn}${retryBtn}${cancelBtn}${deleteBtn}</div>
@@ -1583,6 +1596,9 @@ function downloadStatusText(task, kind) {
     if (d.includes("\u62C9\u53D6")) return d.replace(/已从 NAS /, "\u4ECE NAS ");
     return "\u7B49\u5F85 NAS \u4E0B\u8F7D";
   }
+  // NAS 端合并：状态码直接就是 merging，具体在做什么看 detail（逐集转码 / 音频整轨重编码 / 校验）
+  if (task.status === "merging") return "\u5408\u5E76\u4E2D";
+  if (task.status === "queued") return "\u6392\u961F\u4E2D";
   if (task.status === "ready") return failedCount > 0 ? `\u5DF2\u4E0B\u8F7D \xB7 \u5931\u8D25${failedCount}\u96C6` : "\u5DF2\u4E0B\u8F7D \xB7 \u5F85\u5408\u5E76";
   if (task.status === "done") {
     if (kind === "nas") return "\u5DF2\u5408\u5E76 \xB7 1 \u4E2A\u89C6\u9891";
@@ -1611,6 +1627,7 @@ const RANK_BOARDS = [
 ];
 let downloadMode = null;
 const downloadSelection = /* @__PURE__ */ new Set();
+let downloadGridScroll = 0;
 let downloadParsing = false;
 let downloadCancelled = false;
 let downloadJobId = 0;   // 每次提交一个令牌，防止「取消旧批 → 立刻重开」时旧解析结果误提交
@@ -1658,6 +1675,7 @@ function showDownloadSheet() {
   }
   downloadMode = "episodes";
   downloadSelection.clear();
+  downloadGridScroll = 0;
   downloadParsing = false;
   downloadCancelled = false;
   downloadOverlay.hidden = false;
@@ -1680,6 +1698,8 @@ function hideDownloadSheet() {
 function renderDownloadSheet() {
   const sheet = document.getElementById("download-sheet");
   if (!sheet) return;
+  const prevGrid = sheet.querySelector(".download-sheet-grid");
+  if (prevGrid) downloadGridScroll = prevGrid.scrollTop;
   const episodes = asArray(state.detail.episodes);
   if (downloadMode === "parsing") {
     sheet.innerHTML = `<div class="download-parsing">
@@ -1728,8 +1748,29 @@ function renderDownloadSheet() {
     const on = downloadSelection.has(n);
     return `<label class="dl-ep ${on ? "checked" : ""}" data-dl-ep="${n}"><span>${n}</span></label>`;
   }).join("")}</div>
-    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">\u53D6\u6D88</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? "" : "disabled"}>\u4E0B\u8F7D ${checked ? checked + " \u96C6" : ""}</button></div>
+    <div class="download-sheet-buttons"><button type="button" class="dl-secondary" data-dl-back="1">\u53D6\u6D88</button><button type="button" class="dl-primary" data-dl-confirm="1" ${checked ? "" : "disabled"}>${checked ? `\u4E0B\u8F7D ${checked} \u96C6` : "\u4E0B\u8F7D"}</button></div>
     <p class="dl-batch-note">不限集数，选多少下多少；集数越多准备播放地址越久，准备过程会显示实时进度。</p>`;
+  const gridNow = sheet.querySelector(".download-sheet-grid");
+  if (gridNow && downloadGridScroll > 0) {
+    requestAnimationFrame(() => {
+      gridNow.scrollTop = downloadGridScroll;
+    });
+  }
+}
+function syncDownloadSheetSelection() {
+  const episodes = asArray(state.detail && state.detail.episodes);
+  const total = episodes.length;
+  let checked = 0;
+  for (const ep of episodes) if (downloadSelection.has(Number(ep.number) || 0)) checked++;
+  const count = document.querySelector("#download-sheet .dl-counter");
+  if (count) count.textContent = `已选 ${checked}/${total} 集`;
+  const confirm = document.querySelector("#download-sheet [data-dl-confirm]");
+  if (confirm) {
+    confirm.disabled = checked === 0;
+    confirm.textContent = checked ? `下载 ${checked} 集` : "下载";
+  }
+  const allBtn = document.querySelector("#download-sheet [data-dl-all]");
+  if (allBtn) allBtn.textContent = total && checked === total ? "清空" : "全选";
 }
 async function resolveEpisodesForDownload(episodes, onProgress) {
   const detailEpisodes = asArray(state.detail.episodes);
@@ -1811,7 +1852,7 @@ async function submitDownloadTo(target, remoteId) {
   try {
     if (target === "nas") {
       await api("nas-download-start", { source: contentSource, title: state.detail.title, seriesId: String(state.detail.seriesId || state.detail.id), episodes, cover: state.detail.cover || "" });
-      toast(`已提交 ${episodes.length} 集到 NAS，可在「我的下载」查看进度`);
+      nativeToast(`已提交 ${episodes.length} 集到 NAS，可在「我的下载」查看进度`);
     } else {
       let sourceNow = String(((_a2 = state.detail) == null ? void 0 : _a2.source) || "");
       if (sourceNow !== "huangguo" && sourceNow !== "hongguo") {
@@ -1841,7 +1882,7 @@ async function submitDownloadTo(target, remoteId) {
           ? `；另有 ${failed.length} 集未取到地址已跳过（第 ${failed.slice(0, 5).join("、")}${failed.length > 5 ? " 等" : ""} 集），可稍后单独重试`
           : "";
         await api("download-start", { source: sourceNow, title: state.detail.title, episodes: resolved, debug, cover: state.detail.cover || "", remoteId: targetRemote });
-        toast(debug
+        nativeToast(debug
           ? `调试模式已开始（${resolved.length} 集），分片下完会导出调试包${skipNote}`
           : targetRemote
             ? `已开始下载 ${resolved.length} 集，完成后会自动上传到服务器${skipNote}`
@@ -4654,14 +4695,19 @@ document.addEventListener("click", async (event) => {
     const allSelected = episodes.length && episodes.every((n) => downloadSelection.has(n));
     downloadSelection.clear();
     if (!allSelected) episodes.forEach((n) => downloadSelection.add(n));
-    renderDownloadSheet();
+    document.querySelectorAll("#download-sheet .dl-ep").forEach((cell) => {
+      cell.classList.toggle("checked", downloadSelection.has(Number(cell.dataset.dlEp)));
+    });
+    syncDownloadSheetSelection();
     return;
   }
   if (event.target.closest("[data-dl-ep]")) {
-    const n = Number(event.target.closest("[data-dl-ep]").dataset.dlEp);
+    const cell = event.target.closest("[data-dl-ep]");
+    const n = Number(cell.dataset.dlEp);
     if (downloadSelection.has(n)) downloadSelection.delete(n);
     else downloadSelection.add(n);
-    renderDownloadSheet();
+    cell.classList.toggle("checked", downloadSelection.has(n));
+    syncDownloadSheetSelection();
     return;
   }
   if (event.target.closest("[data-dl-play]")) {

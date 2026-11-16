@@ -219,6 +219,13 @@ public final class MainActivity extends Activity {
             if (isDestroyed() || isFinishing()) return;
             String log = readCrashLast();
             if (log == null) return;
+            /*
+             * 先删快照再弹窗，不能等 dismiss 回调。
+             * 这弹窗之前是 setCancelable(false)、按钮又拿不到遥控器焦点，
+             * 电视上根本关不掉 → dismiss 不触发 → 快照永远留在盘里 → 每次启动都弹，App 没法用。
+             * 删在这里，哪怕用户这次仍然关不掉、直接强杀进程，下次启动也是干净的。
+             */
+            try { new java.io.File(getFilesDir(), "crash_last.log").delete(); } catch (Exception ignored) { }
             showCrashDialog(log);
         }, 700);
     }
@@ -232,12 +239,20 @@ public final class MainActivity extends Activity {
             tv.setTextSize(12f);
             tv.setTextColor(0xFFDFE3EA);
             tv.setPadding(28, 22, 28, 22);
+            // 文本本身不抢焦点，否则遥控器上下键会在正文里打转，永远到不了按钮
+            tv.setFocusable(false);
+            tv.setFocusableInTouchMode(false);
             android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+            scroll.setFocusable(false);
             scroll.addView(tv, new FrameLayout.LayoutParams(-1, -2));
+            // 日志动辄几十行，限高，别把下面两个按钮顶到屏幕外面
+            int maxHeight = (int) (getResources().getDisplayMetrics().heightPixels * 0.45f);
+            FrameLayout holder = new FrameLayout(this);
+            holder.addView(scroll, new FrameLayout.LayoutParams(-1, maxHeight));
 
             android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(this)
                     .setTitle("检测到上次崩溃")
-                    .setView(scroll)
+                    .setView(holder)
                     .setPositiveButton("复制日志", (d, w) -> {
                         try {
                             ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -246,13 +261,37 @@ public final class MainActivity extends Activity {
                         } catch (Exception ignored) { }
                     })
                     .setNegativeButton("关闭", null)
-                    .setCancelable(false)
+                    // 电视上必须能按返回键退出：原来是 false，遥控器又没焦点，等于锁死
+                    .setCancelable(true)
                     .create();
+            // 遥控器：返回 / 确定 / 菜单 任意一个都当"关闭"
+            dialog.setOnKeyListener((d, keyCode, event) -> {
+                if (event.getAction() != android.view.KeyEvent.ACTION_DOWN) return false;
+                switch (keyCode) {
+                    case android.view.KeyEvent.KEYCODE_BACK:
+                    case android.view.KeyEvent.KEYCODE_DPAD_CENTER:
+                    case android.view.KeyEvent.KEYCODE_ENTER:
+                    case android.view.KeyEvent.KEYCODE_NUMPAD_ENTER:
+                    case android.view.KeyEvent.KEYCODE_MENU:
+                    case android.view.KeyEvent.KEYCODE_ESCAPE:
+                        d.dismiss();
+                        return true;
+                    default:
+                        return false;
+                }
+            });
             // 无论复制还是关闭，dismiss 后清掉快照，避免每次启动重复弹
             dialog.setOnDismissListener(d -> {
                 try { new java.io.File(getFilesDir(), "crash_last.log").delete(); } catch (Exception ignored) { }
             });
             dialog.show();
+            // 焦点直接压在「关闭」上，按遥控器确定键就能关
+            android.widget.Button close = dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE);
+            if (close != null) {
+                close.setFocusable(true);
+                close.setFocusableInTouchMode(true);
+                close.requestFocus();
+            }
         } catch (Exception e) {
             android.util.Log.e(TAG, "崩溃弹窗失败", e);
         }
@@ -626,7 +665,7 @@ public final class MainActivity extends Activity {
             pollDeviceCommands();
             // 投屏要求「按下去几秒内电视就有反应」，40 秒一轮回显然不行；
             // 电视常年插电、只在前台轮询，5 秒一次可以接受。手机维持 40 秒（只领下载指令）。
-            if (deviceLoopRunning) deviceHandler.postDelayed(this, DeviceProfile.isTv(MainActivity.this) ? 5_000 : 40_000);
+            if (deviceLoopRunning) deviceHandler.postDelayed(this, DeviceProfile.isTvRole(MainActivity.this) ? 5_000 : 40_000);
         }
     };
 
@@ -676,7 +715,8 @@ public final class MainActivity extends Activity {
      */
     private void handleCastCommand(String commandId, JSONObject payload, DeviceLink link) {
         if (payload == null) { link.ack(commandId, false, "投屏内容为空"); return; }
-        if (!DeviceProfile.isTv(this)) { link.ack(commandId, false, "这台设备不是电视"); return; }
+        // 这里同样用 isTvRole：TV 包装在平板上也要能接投屏
+        if (!DeviceProfile.isTvRole(this)) { link.ack(commandId, false, "这台设备不是电视"); return; }
         String seriesId = payload.optString("seriesId").trim();
         int episode = payload.optInt("episode", 0);
         if (seriesId.isEmpty() || episode < 1) { link.ack(commandId, false, "投屏内容不完整"); return; }
@@ -1594,9 +1634,8 @@ public final class MainActivity extends Activity {
                 intent.putExtra("merged", true);
                 intent.putExtra("nasMode", true);
                 intent.putExtra("auth", "");
-                JSONArray eps = new JSONArray();
-                eps.put(new JSONObject().put("index", 1).put("url", url));
-                intent.putExtra("episodes", eps.toString());
+                // 电脑端只有这一个成品文件，选集没有意义：传空让面板不出现
+                intent.putExtra("episodes", "[]");
                 intent.putExtra("path", url);
                 runOnUiThread(() -> startActivity(intent));
                 return true;
@@ -1612,17 +1651,62 @@ public final class MainActivity extends Activity {
                     throw new IllegalStateException("NAS 任务尚未完成（" + task.optString("status") + "）");
                 int count = task.optInt("episodeCount", 0);
                 String title = task.optString("title", "NAS 下载");
+                /* 分集地址必须按「真实集号」拼：任务只下 16/19/21 时，NAS 上文件叫
+                 * 「第16集.mp4」，以前按 1..count 拼 files/{id}/1、/2、/3，全部 404，
+                 * 用户看到的就是「服务器上找不到这个文件」。 */
                 // 地址必须走 endpoint()：baseUrl 末尾自带 "/"，手写 "/api" 会拼出 "//api"，后端 404。
+                boolean hasMerged = "done".equals(task.optString("status"));
                 JSONArray eps = new JSONArray();
-                for (int i = 1; i <= count; i++) {
-                    eps.put(new JSONObject().put("index", i)
-                            .put("url", endpoint(account.baseUrl(), "/api/download/files/" + nasId + "/" + i)));
+                /* 关键：以「服务器上文件到底在不在」为准。
+                 * 合并完成后后端会清理分集，任务里却仍留着集号列表；以前直接照列表造 eps，
+                 * 面板就列出 1~25，点一集 404（用户实测：合并版选集点开说文件不存在）。
+                 * 所以先问 /episodes 拿每集的 exists，只保留真实存在的。 */
+                boolean fromServer = false;
+                try {
+                    JSONArray list = account.getJson("api/download/tasks/" + nasId + "/episodes")
+                            .optJSONArray("episodes");
+                    if (list != null && list.length() > 0) {
+                        int present = 0;
+                        JSONArray tmp = new JSONArray();
+                        for (int i = 0; i < list.length(); i++) {
+                            JSONObject e = list.optJSONObject(i);
+                            if (e == null) continue;
+                            int no = e.optInt("index", 0);
+                            if (no <= 0) continue;
+                            if (!e.optBoolean("exists", false)) continue;
+                            present++;
+                            tmp.put(new JSONObject().put("index", no)
+                                    .put("url", endpoint(account.baseUrl(), "/api/download/files/" + nasId + "/" + no)));
+                        }
+                        /* 一集都不在：已合并说明分集确实被清了（认这个结论）；
+                         * 未合并还这样，多半是旧后端把集号写成了 1..N，退回任务里的真实集号。 */
+                        if (present > 0 || hasMerged) {
+                            eps = tmp;
+                            fromServer = true;
+                        }
+                    }
+                } catch (Exception ignore) { /* 老后端没有这个接口：走下面的兜底 */ }
+                if (!fromServer) {
+                    JSONArray known = task.optJSONArray("episodes");
+                    if (known != null && known.length() > 0) {
+                        for (int i = 0; i < known.length(); i++) {
+                            int no = known.optInt(i, 0);
+                            if (no <= 0) continue;
+                            eps.put(new JSONObject().put("index", no)
+                                    .put("url", endpoint(account.baseUrl(), "/api/download/files/" + nasId + "/" + no)));
+                        }
+                    }
+                }
+                if (eps.length() == 0 && !hasMerged) {
+                    for (int i = 1; i <= count; i++) {
+                        eps.put(new JSONObject().put("index", i)
+                                .put("url", endpoint(account.baseUrl(), "/api/download/files/" + nasId + "/" + i)));
+                    }
                 }
                 String mergedUrl = endpoint(account.baseUrl(), "/api/download/files/" + nasId + "/0");
-                String firstEpUrl = count > 0 ? endpoint(account.baseUrl(), "/api/download/files/" + nasId + "/1") : mergedUrl;
+                String firstEpUrl = eps.length() > 0 ? eps.optJSONObject(0).optString("url", mergedUrl) : mergedUrl;
                 // status=done 才是「已合并」，这时才有 files/{id}/0；ready 只是下载完，直接播第 1 集，
                 // 省掉一次注定 404 的请求（以前固定先探合并产物，未合并时白闪一下再回退）。
-                boolean hasMerged = "done".equals(task.optString("status"));
                 String token = account.authToken();
                 Intent intent = new Intent(this, LocalPlayerActivity.class);
                 intent.putExtra("title", title);
@@ -1957,6 +2041,20 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface public void setTvCapture(boolean enabled) {
             tvCapture = enabled;
+        }
+
+        /**
+         * 系统 Toast：页面里「已开始下载 N 集」这类交给后台的确认提示走这里。
+         * 页面自带的 #toast-host 固定在顶部，位置离手远、又容易被顶栏压住；
+         * 系统 toast 在屏幕底部，更符合手机习惯。桥不可用时页面会自己回退到浮层。
+         */
+        @JavascriptInterface public void toast(String message) {
+            if (message == null || message.trim().isEmpty()) return;
+            final String text = message.trim();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                android.widget.Toast.makeText(MainActivity.this, text, android.widget.Toast.LENGTH_SHORT).show();
+            });
         }
 
         /** 跟手拖拽：phase = start/move/end，dy 为手指纵向位移（CSS px，向上为负）。 */

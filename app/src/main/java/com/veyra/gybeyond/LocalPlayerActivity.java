@@ -231,6 +231,7 @@ public final class LocalPlayerActivity extends Activity {
 
         titleView = label("", 15f, Color.WHITE);
         titleView.setSingleLine(true);
+        titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titleView.setPadding(dp(56), dp(12), dp(8), 0);
         topBar.addView(titleView, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL));
@@ -294,9 +295,13 @@ public final class LocalPlayerActivity extends Activity {
 
         episodesBtn = label("选集", 13f, Color.WHITE);
         episodesBtn.setGravity(Gravity.CENTER);
-        episodesBtn.setPadding(dp(10), 0, dp(10), 0);
+        episodesBtn.setSingleLine(true);
+        episodesBtn.setPadding(dp(4), 0, dp(4), 0);
         episodesBtn.setOnClickListener(v -> toggleEpisodes());
-        bar.addView(episodesBtn, barLp());
+        // 比图标按钮宽一点：38dp 放两个 13sp 汉字会折行成竖排「选 / 集」
+        bar.addView(episodesBtn, new LinearLayout.LayoutParams(dp(48), dp(38)));
+        // 没有可播分集（合并产物且分集已清理）时不占位
+        episodesBtn.setVisibility(playableEpisodeCount() > 0 ? View.VISIBLE : View.GONE);
 
         zone.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -335,8 +340,15 @@ public final class LocalPlayerActivity extends Activity {
     }
 
     private void toggleEpisodes() {
-        if (merged) { toast("整集合并版没有分集"); return; }
-        if (episodes.length() == 0) { toast("本剧没有选集"); return; }
+        /* 合并版只要分集还在，也允许选集：点某一集就切回分集播放。
+         * 判定必须看「文件是否真的还在」而不是 episodes 数组长度 —— 合并后
+         * 后端/本地会清掉分集，但任务里的集号列表还留着。 */
+        java.util.List<Integer> usable = new java.util.ArrayList<>();
+        for (int i = 0; i < episodes.length(); i++) if (episodePlayable(i)) usable.add(i);
+        if (usable.isEmpty()) {
+            toast(merged ? "整集合并版没有分集文件" : "本剧没有选集");
+            return;
+        }
         if (episodePanel != null) { closeEpisodes(); return; }
         revealControls();
 
@@ -354,20 +366,23 @@ public final class LocalPlayerActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         android.widget.GridLayout grid = new android.widget.GridLayout(this);
         grid.setColumnCount(5);
-        for (int i = 0; i < episodes.length(); i++) {
-            final int n = i;
-            TextView btn = label(String.valueOf(i + 1), 13f, i == index ? Color.BLACK : Color.WHITE);
+        for (int k = 0; k < usable.size(); k++) {
+            final int n = usable.get(k);
+            TextView btn = label(String.valueOf(episodeNo(n)), 13f, n == index ? Color.BLACK : Color.WHITE);
             btn.setGravity(Gravity.CENTER);
-            btn.setBackground(background(i == index ? 0xFFE8C268 : 0xFF373D40, 9));
+            btn.setBackground(background(n == index ? 0xFFE8C268 : 0xFF373D40, 9));
             android.widget.GridLayout.LayoutParams p = new android.widget.GridLayout.LayoutParams();
             p.width = dp(46); p.height = dp(40);
             p.setMargins(dp(3), dp(3), dp(3), dp(3));
             grid.addView(btn, p);
             btn.setOnClickListener(v -> {
                 closeEpisodes();
-                if (n == index) return;
+                if (!merged && n == index) return;
                 String src = epSource(n);
-                if (src == null) { toast("第 " + (n + 1) + " 集文件不可读"); return; }
+                if (src == null) { toast("第 " + episodeNo(n) + " 集文件不可读"); return; }
+                // 从「整集合并版」切到某一集：退出合并态，恢复上一集按钮，顶栏改回「第 N 集」
+                merged = false;
+                prevBtn.setVisibility(View.VISIBLE);
                 index = n;
                 play(src, false);
                 refreshTitle();
@@ -375,6 +390,13 @@ public final class LocalPlayerActivity extends Activity {
         }
         scroll.addView(grid);
         panel.addView(scroll, new LinearLayout.LayoutParams(-1, dp(236)));
+        /* 打开面板就滚到当前这一集：一季几十集时，用户滑到第 80 集再打开还得从头翻。 */
+        final android.widget.GridLayout gridRef = grid;
+        final int scrollPos = Math.max(0, usable.indexOf(index));
+        scroll.post(() -> {
+            View cur = gridRef.getChildAt(scrollPos);
+            if (cur != null) scroll.smoothScrollTo(0, Math.max(0, cur.getTop() - dp(6)));
+        });
 
         episodeScrim = new View(this);
         episodeScrim.setOnClickListener(v -> closeEpisodes());
@@ -460,7 +482,8 @@ public final class LocalPlayerActivity extends Activity {
             titleView.setText(base + " · 整集合并版");
             return;
         }
-        titleView.setText(base + " · 第 " + (index + 1) + " 集（共 " + episodes.length() + " 集）");
+        /* 集号用真实集号：只下载 4~9 集时显示「第 4 集（共 6 集）」，不是「第 1 集」 */
+        titleView.setText(base + " · 第 " + episodeNo(index) + " 集（共 " + episodes.length() + " 集）");
     }
 
     private void refreshTime() {
@@ -490,7 +513,7 @@ public final class LocalPlayerActivity extends Activity {
             return;
         }
         String src = epSource(next);
-        if (src == null) { toast("第 " + (next + 1) + " 集文件不可读"); return; }
+        if (src == null) { toast("第 " + episodeNo(next) + " 集文件不可读"); return; }
         index = next;
         play(src, false);
         revealControls();
@@ -520,6 +543,33 @@ public final class LocalPlayerActivity extends Activity {
             }
         }
         return best != null ? best.getAbsolutePath() : null;
+    }
+
+    /** 第 i 个可播分集的「真实集号」。
+     *  episodes 里带的是下载时的真实集号（只下 4~9 集时是 4,5,6,7,8,9），
+     *  以前这里一律用数组下标 +1，于是顶栏把第 4 集写成「第 1 集」、选集面板也列成 1~6。
+     *  老数据/异常数据没有 index 字段时才退回下标，避免显示 0。 */
+    private int episodeNo(int i) {
+        JSONObject ep = episodes.optJSONObject(i);
+        int n = ep == null ? 0 : ep.optInt("index", 0);
+        return n > 0 ? n : i + 1;
+    }
+
+    /** 该集是否真的能播：本地要求文件还能读，NAS 要求地址有效。
+     *  合并版在服务端/本地把分集清掉后，任务里的集号列表仍会留着，
+     *  以前面板照列表全列出来，点一集就是「文件不存在」。 */
+    private boolean episodePlayable(int i) {
+        JSONObject ep = episodes.optJSONObject(i);
+        if (ep == null) return false;
+        if (nasMode) return !ep.optString("url", "").isEmpty();
+        String p = ep.optString("path", "");
+        return !p.isEmpty() && new File(p).canRead();
+    }
+
+    private int playableEpisodeCount() {
+        int n = 0;
+        for (int i = 0; i < episodes.length(); i++) if (episodePlayable(i)) n++;
+        return n;
     }
 
     private String epSource(int i) {
@@ -590,7 +640,7 @@ public final class LocalPlayerActivity extends Activity {
 
     private String epLabel(int i) {
         String base = title == null || title.isEmpty() ? "本剧" : title;
-        return base + " · 第" + String.format(Locale.US, "%02d", i + 1) + "集";
+        return base + " · 第" + String.format(Locale.US, "%02d", episodeNo(i)) + "集";
     }
 
     private boolean handleGesture(MotionEvent event) {
