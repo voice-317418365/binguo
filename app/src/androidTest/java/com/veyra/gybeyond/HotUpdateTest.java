@@ -62,7 +62,7 @@ public class HotUpdateTest {
         HotUpdateManager manager = manager(); stage(manager, "good");
         assertEquals(101, manager.status().getLong("pending"));
         HotUpdateManager.Session trial = manager.beginSession();
-        assertTrue(trial.trial); assertEquals("https://example.com", trial.site.origin);
+        assertTrue(trial.trial); assertEquals("https://example.com", trial.site.origin());
         assertEquals(101, trial.revision);
         assertEquals("#e57373", trial.theme.getJSONObject("light").getString("--accent"));
         manager.markHealthy(trial);
