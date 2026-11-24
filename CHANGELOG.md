@@ -2,6 +2,30 @@
 
 版本号沿用自建线 `0.28.14xx`（versionCode `414xx`），与上游 `v0.28.x` 区分开。APK 与 `dist/latest.json` 属于发布产物，`dist/` 已加入 `.gitignore`，变更记录以本文件为准。
 
+## 0.28.1438（2026-11-25）
+
+合入上游 `v0.31.25`~`v0.31.34`（2026-11-24 批次，13 个提交）的红果取流换代。站方自 11-24 起只接受 App 自带 `libmetasec_ml.so` 产出的播放签名，内置移植版（Java 重写的 Gorgon / Argus / Ladon / Medusa）一律返回 `HTTP 200 + 空正文`，表现为「能进详情页但播不出 / 只出试看」。
+
+### 新增
+
+- **服务端真 so 签名**：`docker-compose.yml` 新增 `hongguo-signer`（`beilunyang/openhongguo-signer`，unidbg + 真 so，`:19830`，仅容器网络可达），后端经 `HG_SIGNER` 调用；`server/fetch/hongguo-fetch-linux-{amd64,arm64}` 随镜像分发，容器启动时拉起。
+- **`episode_id` 取流链路**：`hongguo-app.js` 新增 `episodeIds()` / `videoModelByEpisode()`，取流入口从 `vid` 收敛到 `episode_id`；空响应改 10 分钟冷却，不再靠频繁换设备硬重试。
+- **建任务前预热**：`downloader.js` 在解析集数前先探测一次，避免下载任务卡在取流阶段。
+- **APK 后端兜底**：`HongguoDirect` 本地取址失败（200/0B）后自动转 `/api/hongguo/play-direct`，由服务端代签；带冷却记忆，同一集不会每次都白等一跳。
+
+### 改动
+
+- `HongguoV5` medusa 参数 `377 → 369`；`HongguoDirect` 播放请求补齐 29 项 `playerQuery` 与新请求头。
+- 服务端取流改串行（间隔 1.5s）降低风控命中；`index.js` 新增 `seriesResolver` / `resolveEpisodeId` / `fetchStream`，`play-direct` 与 WebUI 播放统一走新链。
+- `proxy-fetch.js` 支持首跳 POST + body（黄果播放接口是 POST）。
+- 部署侧：`Dockerfile` 换阿里云 alpine 源与 npmmirror（境内构建不再卡在 `dl-cdn`），健康检查改为跟随 `PORT`（原写死 8080，compose 用 8888 会一直 unhealthy）。
+
+### 说明
+
+- 账号同步（aid=8662 / passport 扫码 / `read_history` / `read_progress`）、更新检查、品牌图标、1.5 倍速均未改动。
+- 取流签名依赖服务端在线；视频流仍是 CDN 直连，不经服务器转发。
+- 未合入扫码页相册入口（可选项）。
+
 ## 0.28.1436（2026-11-17）
 
 本版合入上游 `v0.28.36`~`v0.28.62` 全部有效改动（选集真实集号、电视端界面改版、红果 v5 取流），并修掉一个上游自带的兼容性 bug。

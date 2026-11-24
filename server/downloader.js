@@ -21,6 +21,46 @@ const { spawnSync, spawn } = require('child_process');
 const hgApp = require('./hongguo-app');
 const proxyFetch = require('./proxy-fetch');
 
+/* 站方 2026-11-24 之后换了一套匿名设备的判定：新注册设备头几次取流一律回
+ * HTTP 200 + 0 字节，用一会儿才「热」。建任务前先拿第一集预热，失败退避重试。
+ *
+ * 取流全局串行 + 最小间隔：播放接口对同一出口 IP 的并发极其敏感，之前默认 2 个
+ * worker 并发取流也会快速打光匿名配额，之后整段时间取流全空。串行后 71 集约 2 分钟，
+ * 比「并发打黑 → 全军覆没 → 重跑再打黑」快得多。 */
+let fetchChain = Promise.resolve();
+let lastFetchAt = 0;
+const FETCH_MIN_GAP = Math.max(0, parseInt(process.env.HG_FETCH_GAP_MS || '1500', 10) || 0);
+
+function serialFetch(fn) {
+  const run = fetchChain.then(async () => {
+    const wait = FETCH_MIN_GAP - (Date.now() - lastFetchAt);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastFetchAt = Date.now();
+    return fn();
+  });
+  fetchChain = run.then(() => {}, () => {});
+  return run;
+}
+
+async function warmupFetcher(episodeId) {
+  const waits = [0, 8000, 16000, 32000, 48000];
+  for (let i = 0; i < waits.length; i++) {
+    if (waits[i]) await new Promise(r => setTimeout(r, waits[i]));
+    try {
+      const s = await serialFetch(() => hgApp.videoModelByEpisode(episodeId));
+      if (s && s.url) return s;
+      console.log(`[hongguo-app] 取流预热第 ${i + 1}/${waits.length} 次：空响应`);
+    } catch (e) {
+      console.log(`[hongguo-app] 取流预热第 ${i + 1}/${waits.length} 次：${e.message}`);
+    }
+  }
+  return null;
+}
+
+// 由 index.js 注入：按剧名反查 fqnovel series_id（走目录搜索接口，失败抛错）。
+let seriesResolver = null;
+function setSeriesResolver(fn) { seriesResolver = typeof fn === 'function' ? fn : null; }
+
 // 数据/下载目录：环境变量指定，默认 /data、/video（docker-compose 挂载）。
 // 裸跑/本地运行时根目录不可写 → 自动回退到可写目录，避免服务因 EACCES 直接崩溃。
 let DATA_DIR = process.env.DATA_DIR || '/data';
@@ -670,45 +710,72 @@ async function runTask(task) {
     task._hgPlayReferer = `https://huangguoai.io/video/${task.seriesId}/`;
   }
 
-  // 红果 App 取流升级（v0.13.45）：官方接口多清晰度选最高档（随机设备+签名，NAS 家宽出口）。
-  // 解析链路（NAS 自主，手机端只推 seriesId/title/集数）：
-  //   A. seriesId 直接 videoDetail 拿 vid
-  //   B. A 失败 → 标题搜索 hongguoduanju.com 匹配真 series_id → videoDetail
+  // 红果取流（2026-11-24 定版）：只有「数字 episode_id + 完整客户端签名 + 真实 so 签名服务」
+  // 还能取到片源；手机推来的 vid、老接口 video_model 一律回 200 + 空正文，不再尝试。
+  // 解析链路：
+  //   A. seriesId → 取流服务 /episodes 拿 episode_id 表
+  //   B. A 失败 → 按剧名在目录 JSON 接口反查 series_id → 再取分集
   //   C. 仍失败 → 下载 worker 惰性抓镜像站网页源保底（低码率，仅兜底）
-  if (task.source === 'hongguo' && !task._appVids) {
+  // 旧任务里 _appVids 早就是 true 但没有 episode_id，这里按「是否缺 episode_id」重新解析，
+  // 免得用户必须删任务重建。
+  const missingEp = task.episodes.some(ep => !ep.episodeId);
+  if (task.source === 'hongguo' && (missingEp || !task._appVids)) {
     if (!task._webId) task._webId = task.seriesId; // 保留手机推来的原始 ID（网页源保底用）
-    let vids = null;
-    // 手机端直推的 vids（APK 用无签名 video_detail 解析官方 vid）：直接注入，绕开 NAS 端签名风控
-    if (Array.isArray(task.vids) && task.vids.length >= task.episodes.length) {
-      vids = task.vids.map(v => String(v));
-      console.log(`[hongguo-app] ${task.title} 手机端注入 ${vids.length} 个 vid`);
-    } else if (task.seriesId) {
+    const maxIndex = task.episodes.reduce((m, e) => Math.max(m, Number(e.index) || 0), 0);
+    let fetcher = null;
+    if (task.seriesId) {
       try {
-        const det = await hgApp.videoDetail(task.seriesId);
-        if (det.vids && det.vids.length >= task.episodes.length) vids = det.vids;
-        else console.log(`[hongguo-app] ${task.title} seriesId=${task.seriesId} 集数不足(${det.vids ? det.vids.length : 0}/${task.episodes.length})`);
+        fetcher = await hgApp.episodeIds(task.seriesId);
       } catch (e) {
-        console.log(`[hongguo-app] ${task.title} videoDetail(${task.seriesId}) 失败: ${e.message}`);
+        console.log(`[hongguo-app] ${task.title} 取流服务分集失败（series=${task.seriesId}）: ${e.message}`);
       }
     }
-    if (!vids) {
+    /* seriesId 是手机推来的，可能是网页 id、也可能取不到分集；用目录搜索按标题反查。 */
+    if ((!fetcher || !fetcher.length) && seriesResolver) {
       try {
-        const sid = await hgApp.searchSeries(task.title, task.episodes.length);
+        const sid = await seriesResolver(task.title, maxIndex);
         if (sid) {
-          console.log(`[hongguo-app] ${task.title} 标题搜索命中 series_id=${sid}`);
+          console.log(`[hongguo-app] ${task.title} 标题反查 series_id=${sid}（原 ${task.seriesId || '空'}）`);
           task.seriesId = sid;
-          const det = await hgApp.videoDetail(sid);
-          if (det.vids && det.vids.length >= task.episodes.length) vids = det.vids;
+          fetcher = await hgApp.episodeIds(sid);
+        } else {
+          console.log(`[hongguo-app] ${task.title} 标题反查没有匹配到 series_id`);
         }
       } catch (e) {
-        console.log(`[hongguo-app] ${task.title} 标题搜索匹配失败: ${e.message}`);
+        console.log(`[hongguo-app] ${task.title} 标题反查 series_id 失败: ${e.message}`);
       }
     }
-    if (vids) {
-      task.episodes.forEach((ep, i) => { ep.vid = vids[i]; });
+    if (fetcher && fetcher.length > 0) {
+      const byIndex = new Map(fetcher.map(item => [Number(item.index), String(item.id)]));
+      let mapped = 0;
+      task.episodes.forEach(ep => {
+        const id = byIndex.get(Number(ep.index));
+        if (id) { ep.episodeId = id; mapped++; }
+      });
       task._appVids = true;
-      console.log(`[hongguo-app] ${task.title} 注入 ${vids.length} 个 vid，走 App 最高清晰度取流`);
+      console.log(`[hongguo-app] ${task.title} 取流服务注入 ${mapped}/${task.episodes.length} 个 episode_id`);
+      /* 新设备先预热一集，拿不到也别急：后面每集还会各自重试。 */
+      if (!task._warmed) {
+        const first = task.episodes.find(ep => ep.episodeId);
+        if (first) {
+          const warm = await warmupFetcher(first.episodeId);
+          if (warm) {
+            task._warmed = true;
+            first.url = warm.url;
+            first.key = warm.key || '';
+            first.altUrls = (warm.altUrls || []).slice(0, 4);
+            console.log(`[hongguo-app] ${task.title} 取流预热成功`);
+          } else {
+            console.log(`[hongguo-app] ${task.title} 取流预热仍空，按集继续尝试`);
+          }
+        }
+      }
+      if (mapped < task.episodes.length) {
+        const lack = task.episodes.filter(ep => !ep.episodeId).map(ep => ep.index);
+        console.log(`[hongguo-app] ${task.title} 第 ${lack.join('/')} 集超出该剧集数（共 ${fetcher.length} 集）`);
+      }
     } else {
+      task._appVids = false;
       console.log(`[hongguo-app] ${task.title} App 源不可用，将走网页源保底`);
     }
     touch(task);
@@ -756,21 +823,26 @@ async function runTask(task) {
             try {
               const started = Date.now();
               // 红果 App 取流：每轮每集首次尝试重新取流（换新 URL 解 403/过期；失败保留旧 url 降级网页源）
-              if (ep.vid && attempt === 0) {
-                try {
-                  const s = await hgApp.videoModel(ep.vid);
-                  if (s && s.url) {
-                    ep.url = s.url;
-                    ep.key = s.key || '';
-                    ep.altUrls = (s.altUrls || []).slice(0, 4);
-                    ep._appSource = true;
-                    // App 源 CDN 防盗链校验：下载带取流 URL 同域 Referer（源站要求 Referer 时避免 403）
-                    try { ep._appReferer = 'https://' + new URL(s.url).host + '/'; } catch { ep._appReferer = ''; }
-                    task.progress.detail = `第 ${idx + 1} 集取流 ${s.quality || ''}`;
+              if (ep.episodeId && attempt === 0 && !ep.url) {
+                for (const wait of [0, 6000]) {
+                  if (wait) await new Promise(r => setTimeout(r, wait));
+                  try {
+                    const s = await serialFetch(() => hgApp.videoModelByEpisode(ep.episodeId));
+                    if (s && s.url) {
+                      ep.url = s.url;
+                      ep.key = s.key || '';
+                      ep.altUrls = (s.altUrls || []).slice(0, 4);
+                      ep._appSource = true;
+                      // App 源 CDN 防盗链校验：下载带取流 URL 同域 Referer（源站要求 Referer 时避免 403）
+                      try { ep._appReferer = 'https://' + new URL(s.url).host + '/'; } catch { ep._appReferer = ''; }
+                      task.progress.detail = `第 ${idx + 1} 集取流 ${s.quality || ''}`;
+                      break;
+                    }
+                  } catch (e) {
+                    console.log(`[hongguo-app] 第 ${idx + 1} 集取流为空，稍后重试: ${e.message}`);
                   }
-                } catch (e) {
-                  console.log(`[hongguo-app] 第 ${idx + 1} 集取流失败，降级网页源: ${e.message}`);
                 }
+                if (!ep.url) console.log(`[hongguo-app] 第 ${idx + 1} 集取流仍未拿到地址，降级网页源`);
               }
               // 仍无播放地址（手机端未推 URL 且 App 源不可用）：NAS 自抓镜像站网页源保底
               if (!ep.url && attempt === 0) {
@@ -1106,4 +1178,4 @@ function status() {
 loadTasks();
 ensureDirs();
 
-module.exports = { createTask, listTasks, getTask, getRawTask, taskDirOf, patchTask, deleteTask, mergeTask, retryFailedEpisodes, status, setDownloadDir, setConcurrency, setMergeOptions, mergeEpisodes, epName, safeJoin };
+module.exports = { createTask, listTasks, getTask, getRawTask, taskDirOf, patchTask, deleteTask, mergeTask, retryFailedEpisodes, status, setDownloadDir, setConcurrency, setMergeOptions, setSeriesResolver, mergeEpisodes, epName, safeJoin };

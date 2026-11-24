@@ -36,6 +36,48 @@ const FIXED_DEVICE = {
 
 let registeredDevice = null; // { device_id, iid }
 
+/* ---------------- 本地取流服务（hongguo-fetch） ----------------
+ * 2026-11-23 之后，站方把「参数不全」和「缺 x-medusa」的请求一律判成非客户端，
+ * 回 200 + 空正文 —— 本文件里这套 Gorgon/Argus/Ladon 内置签名已经过不去了。
+ * hongguo-fetch 随镜像分发，内部用完整客户端签名链 + 真实 so 签名服务，
+ * 按 episode_id 取流并顺带解出 CENC 密钥：
+ *   GET /episodes?series= → { episodes: [{ index, id, playable }] }
+ *   GET /play?episode=    → { url, altUrls, key(32 hex), quality, expires_at }
+ */
+const HG_FETCH = (process.env.HG_FETCH_URL || 'http://127.0.0.1:18098').replace(/\/+$/, '');
+
+function fetchJson(pathname, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const mod = require('http');
+    const req = mod.get(`${HG_FETCH}${pathname}`, { timeout: timeoutMs || 45000 }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        try { resolve(JSON.parse(text)); }
+        catch { reject(new Error(`取流服务响应异常: ${text.slice(0, 120)}`)); }
+      });
+    });
+    req.on('error', error => reject(new Error(`取流服务不可用: ${error.message}`)));
+    req.on('timeout', () => req.destroy(new Error('取流服务超时')));
+  });
+}
+
+/* 上游对同一出口 IP 的播放请求有静默配额：连续打空之后整段时间（实测 ≥40 分钟）
+ * 所有播放接口都回 200 + 0 字节，连详情接口都会跟着降级。继续重试只会把 IP 打得更黑，
+ * 所以连续 3 次空就冷却，冷却期内直接报错、不再发请求。 */
+let emptyStreak = 0;
+let cooldownUntil = 0;
+const COOLDOWN_MS = Math.max(60_000, parseInt(process.env.HG_COOLDOWN_MS || '600000', 10) || 600000);
+
+function noteEmpty(reason) {
+  emptyStreak++;
+  if (emptyStreak >= 3 && Date.now() >= cooldownUntil) {
+    cooldownUntil = Date.now() + COOLDOWN_MS;
+    console.log(`[stream] 连续 ${emptyStreak} 次空响应（${reason}），进入 ${Math.round(COOLDOWN_MS / 60000)} 分钟冷却`);
+  }
+}
+
 const QUALITY = {
   2160: 2160, 1440: 1440, 1080: 1080, 720: 720, 576: 576, 540: 540, 480: 480, 360: 360,
   1920: 1080, 1280: 720, 1024: 576, 854: 480, 640: 360,
@@ -158,7 +200,6 @@ async function signedPost(path, bodyObj, extraHeaders) {
     if (!registeredDevice) currentDevice();
   }
   const bodyStr = JSON.stringify(bodyObj);
-  let rotations = 0;
   let attempts = 0;
   let lastErr = null;
   while (attempts < 3) {
@@ -203,16 +244,8 @@ async function signedPost(path, bodyObj, extraHeaders) {
     if (!text.text.trim() || text.code !== 200) {
       lastErr = new Error(`空响应/异常 HTTP ${text.code} len=${text.text.length}`);
       attempts++;
-      if (attempts >= 2 && rotations < 3) {
-        registeredDevice = null;
-        currentDevice.pair = null;
-        await registerDevice();
-        if (!registeredDevice) currentDevice();
-        rotations++;
-        attempts = 0;
-        await sleep(1200);
-        continue;
-      }
+      /* 不再换设备重试：2026-11-24 起服务端对内置签名一律回 200+0 字节，
+         换设备只会白注册、把 IP 和设备配额打光（新设备还要“养”才有片源）。 */
       if (attempts < 3) { await sleep(1800); continue; }
       throw lastErr;
     }
@@ -510,4 +543,39 @@ async function fetchWebUrl(id, episode) {
   throw new Error('网页源播放地址获取失败');
 }
 
-module.exports = { videoDetail, videoModel, deriveKey, searchSeries, fetchWebUrl, registerDevice, currentDevice, buildQuery, goEscape, signedPost, signedGet };
+/** 分集列表：返回 [{ index, id, playable }]，id 是数字 episode_id。 */
+async function episodeIds(seriesId) {
+  const json = await fetchJson(`/episodes?series=${encodeURIComponent(String(seriesId))}`);
+  if (!json || !Array.isArray(json.episodes) || json.episodes.length === 0) {
+    throw new Error((json && json.error) || '分集列表为空');
+  }
+  return json.episodes;
+}
+
+/** 按 episode_id 取流，返回与 videoModel 同形状的结果（key 为 32 位 hex）。 */
+async function videoModelByEpisode(episodeId) {
+  if (Date.now() < cooldownUntil) {
+    const left = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 60000));
+    throw new Error(`上游限流冷却中（约剩 ${left} 分钟）：继续重试只会让出口 IP 被封更久，请稍后再试`);
+  }
+  let json;
+  try {
+    json = await fetchJson(`/play?episode=${encodeURIComponent(String(episodeId))}`);
+  } catch (e) {
+    noteEmpty(e.message);
+    throw e;
+  }
+  if (!json || !json.url) {
+    noteEmpty((json && json.error) || '取流结果为空');
+    throw new Error((json && json.error) || '取流结果为空');
+  }
+  emptyStreak = 0;
+  return {
+    url: json.url,
+    altUrls: Array.isArray(json.altUrls) ? json.altUrls : [],
+    key: json.key || '',
+    quality: json.quality || '',
+  };
+}
+
+module.exports = { videoDetail, videoModel, deriveKey, searchSeries, fetchWebUrl, registerDevice, currentDevice, buildQuery, goEscape, signedPost, signedGet, episodeIds, videoModelByEpisode };

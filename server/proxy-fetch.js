@@ -74,8 +74,13 @@ function connectViaProxy(proxy, host, port, done) {
 // （一般是 ssrf-guard 的 assertPublicUrl），跳数仍受 opts.redirects 限制。
 function requestThroughProxy(targetUrl, proxyUrl, opts, done) {
   const { headers = {}, timeout = 25000, maxBytes = 5 * 1024 * 1024, redirects = 5, guard } = opts || {};
+  // 黄果 playback 接口 2026-11 起改成 POST + JSON 正文；只允许首跳带方法与正文，
+  // 302 之后的跳转一律按 GET 跟随（与浏览器/curl 的语义一致，避免把正文重复发给 CDN）。
+  const method = String(opts && opts.method || 'GET').toUpperCase();
+  const hasBody = opts && opts.body !== undefined && opts.body !== null;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'veyra-curl-'));
   const bodyFile = path.join(dir, 'body');
+  const payloadFile = path.join(dir, 'payload');
   const headerFile = path.join(dir, 'headers');
   let current = String(targetUrl || '');
   let hops = 0;
@@ -90,6 +95,12 @@ function requestThroughProxy(targetUrl, proxyUrl, opts, done) {
 
     const args = ['-sS', '--max-time', String(Math.max(1, Math.round(timeout / 1000)))];
     if (proxyUrl) args.push('-x', proxyUrl);
+    if (hops === 0 && method !== 'GET') args.push('-X', method);
+    if (hops === 0 && hasBody) {
+      const payload = Buffer.isBuffer(opts.body) ? opts.body : Buffer.from(String(opts.body), 'utf8');
+      fs.writeFileSync(payloadFile, payload);
+      args.push('--data-binary', '@' + payloadFile);
+    }
     for (const [k, v] of Object.entries(headers)) {
       if (v !== undefined && v !== null) args.push('-H', `${k}: ${v}`);
     }

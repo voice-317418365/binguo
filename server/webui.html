@@ -1099,8 +1099,15 @@ function playEpisode(j,resumeSec){
     }
   };
   if(mode==='public'){
-    if(!ep.vid){document.getElementById('player-wrap').classList.remove('open');toast('该集暂无可播放地址（vid 缺失）');return}
-    attachPlayer('/api/web/hongguo/stream?vid='+encodeURIComponent(ep.vid),doResume);
+    // 取流要的是数字 episode_id；vid 只是详情页里的字符串，后端按 series + 集号换算，
+    // 两个都带上，后端优先用 vid（本来就是数字时省一次查询）。
+    const q=[];
+    if(ep.vid)q.push('vid='+encodeURIComponent(ep.vid));
+    if(_detail.id)q.push('series='+encodeURIComponent(_detail.id));
+    // 带剧名：series 是网页 id 时后端取不到分集，用剧名反查 series_id
+    if(_detail.title)q.push('title='+encodeURIComponent(_detail.title));
+    q.push('episode='+encodeURIComponent(ep.number!=null?ep.number:0));
+    attachPlayer('/api/web/hongguo/stream?'+q.join('&'),doResume);
   }else if(remotePrivate()){
     const epPath='episode?id='+encodeURIComponent(_detail.id)+'&episode='+ep.number;
     const fallback=()=>{
