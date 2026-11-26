@@ -64,17 +64,29 @@ function fetchJson(pathname, timeoutMs) {
 }
 
 /* 上游对同一出口 IP 的播放请求有静默配额：连续打空之后整段时间（实测 ≥40 分钟）
- * 所有播放接口都回 200 + 0 字节，连详情接口都会跟着降级。继续重试只会把 IP 打得更黑，
- * 所以连续 3 次空就冷却，冷却期内直接报错、不再发请求。 */
-let emptyStreak = 0;
-let cooldownUntil = 0;
-const COOLDOWN_MS = Math.max(60_000, parseInt(process.env.HG_COOLDOWN_MS || '600000', 10) || 600000);
+ * 所有播放接口都回 200 + 0 字节。继续重试只会把 IP 打得更黑，所以连续 3 次空
+ * 就进入冷却，冷却期内直接报错、不再发请求。
+ *
+ * 2026-11-26 修正：计数与冷却必须按「普通 / 合集」分开。
+ * 以前是全局一份，一个取不到片源的 UGC 合集被连点几下就把普通短剧一起拖下水——
+ * 全站 10 分钟播不了，用户看到的就是「更新之后什么都播不了了」。
+ * 另外只有真正的空响应（200/0B）才计数：路由返回错误码、超时、后端自述的原因
+ * 都不代表出口被限流，不该触发冷却。 */
+const COOLDOWN_MS = Math.max(60_000, parseInt(process.env.HG_COOLDOWN_MS || '300000', 10) || 300000);
+const emptyStreak = { short: 0, album: 0 };
+const cooldownUntil = { short: 0, album: 0 };
 
-function noteEmpty(reason) {
-  emptyStreak++;
-  if (emptyStreak >= 3 && Date.now() >= cooldownUntil) {
-    cooldownUntil = Date.now() + COOLDOWN_MS;
-    console.log(`[stream] 连续 ${emptyStreak} 次空响应（${reason}），进入 ${Math.round(COOLDOWN_MS / 60000)} 分钟冷却`);
+function isRateLimited(reason) {
+  const text = String(reason || '');
+  return /200\s*\/?\s*0B|空正文|empty response|取流结果为空/i.test(text);
+}
+
+function noteEmpty(kind, reason) {
+  if (!isRateLimited(reason)) return;
+  emptyStreak[kind]++;
+  if (emptyStreak[kind] >= 3 && Date.now() >= cooldownUntil[kind]) {
+    cooldownUntil[kind] = Date.now() + COOLDOWN_MS;
+    console.log(`[stream] ${kind} 连续 ${emptyStreak[kind]} 次空响应（${reason}），进入 ${Math.round(COOLDOWN_MS / 60000)} 分钟冷却`);
   }
 }
 
@@ -312,15 +324,92 @@ async function signedGet(path, params, extraHeaders) {
   try { return JSON.parse(r.text); } catch { throw new Error('响应解析失败: ' + r.text.slice(0, 200)); }
 }
 
-/** 详情：拿全集 vid 列表（与下载集序对齐：vids[i] = 第 i+1 集）。 */
-async function videoDetail(seriesId) {
+/** 详情原始信息：分集为空也照样返回，供「暂无剧集」这种待播剧用（不抛错）。 */
+async function seriesInfo(seriesId) {
   const json = await signedPost('/novel/player/video_detail/v1/', { series_id: String(seriesId) });
   const vd = (json.data || {}).video_data || {};
-  const list = vd.video_list || [];
-  if (!Array.isArray(list) || list.length === 0) throw new Error('红果详情未返回分集列表');
+  const list = Array.isArray(vd.video_list) ? vd.video_list : [];
   const vids = list.map(v => (v && v.vid != null ? String(v.vid) : '')).filter(v => v);
-  if (vids.length === 0) throw new Error('红果详情分集 vid 为空');
-  return { vids, title: vd.series_title || '' };
+  return {
+    vids,
+    title: vd.series_title || '',
+    cover: vd.series_cover || '',
+    label: vd.episode_right_text || '',
+    episodeCnt: Number(vd.episode_cnt) || 0,
+  };
+}
+
+/**
+ * UGC 合集分集登记表。
+ *
+ * 合集分集（个人创作者上传的多集视频）取流时要按 PUGC 分组（1001）+ video_id_type=1，
+ * 按普通短剧语义（1004）请求只会回 101000 或 200+空正文——表现就是「详情有 10 集，
+ * 点哪集都播不了」。详情走 albumInfo 时把这些 vid 记下来，取流就能自动换语义。
+ */
+const albumVids = new Set();
+const ALBUM_VID_LIMIT = 4000;
+
+function markAlbumVids(vids, on = true) {
+  if (!Array.isArray(vids)) return;
+  for (const vid of vids) {
+    const id = String(vid || '').trim();
+    if (!/^\d{4,25}$/.test(id)) continue;
+    if (on) albumVids.add(id); else albumVids.delete(id);
+  }
+  while (albumVids.size > ALBUM_VID_LIMIT) albumVids.delete(albumVids.values().next().value);
+}
+
+function isAlbumVid(vid) {
+  return albumVids.has(String(vid || '').trim());
+}
+
+/**
+ * UGC 合集：个人创作者上传的多集视频。
+ *
+ * 这类内容在 video_detail 里是个空壳（content_type 1003、episode_cnt 0、video_list 空），
+ * 分集实际挂在 album_detail 下，album_id 就是搜索结果里给的那个 series_id。
+ * 每集的 series_id 就是取流用的 vid（列表项的 video_list[0].vid 是空的，
+ * 真正的 vid 只在 video_detail_data 里出现，所以两处都看，取不到就用 series_id 顶上）。
+ */
+async function albumInfo(albumId) {
+  const json = await signedPost('/novel/player/album_detail/v1/', {
+    album_id: String(albumId),
+    need_video_detail_info: true,
+    series_ids: [],
+    biz_param: { video_platform: 3 },
+  });
+  const ad = (json.data || {}).album_data || {};
+  const vdd = (json.data || {}).video_detail_data || {};
+  const vids = [];
+  for (const it of (ad.video_detail_list || [])) {
+    const sid = String(it.series_id_str || it.series_id || '');
+    const one = sid ? vdd[sid] : null;
+    const wl = (one && one.video_data && one.video_data.video_list) || [];
+    const vid = String((wl[0] && wl[0].vid) || '') || sid;
+    if (vid) vids.push(vid);
+  }
+  /* episode_entrance_text 是数组（['合集', 标题, '更新至10集']），挑带「集」的那条当标签 */
+  const entrance = ad.episode_entrance_text;
+  const pickLabel = arr => (Array.isArray(arr) ? arr.map(String).filter(s => /集/.test(s)).pop() : '');
+  let label = pickLabel(entrance) || pickLabel(ad.sub_title_list) || (vids.length ? '共 ' + vids.length + ' 集' : '');
+  markAlbumVids(vids);
+  return {
+    vids,
+    title: ad.title || '',
+    cover: ad.cover || '',
+    label,
+    episodeCnt: Number(ad.episode_cnt) || 0,
+  };
+}
+
+/** 详情：拿全集 vid 列表（与下载集序对齐：vids[i] = 第 i+1 集）。 */
+async function videoDetail(seriesId) {
+  const info = await seriesInfo(seriesId);
+  if (info.vids.length) return { vids: info.vids, title: info.title };
+  /* video_detail 空壳时再问一次 album：UGC 合集（个人创作者的多集视频）就长这样 */
+  const album = await albumInfo(seriesId).catch(() => null);
+  if (album && album.vids.length) return { vids: album.vids, title: album.title || info.title };
+  throw new Error('红果详情未返回分集列表');
 }
 
 /** 单集取流：签名调用 video_model/v1，选最高清晰度档（对齐 python 参照，无上限）。 */
@@ -543,6 +632,14 @@ async function fetchWebUrl(id, episode) {
   throw new Error('网页源播放地址获取失败');
 }
 
+/** App 搜索：网页目录搜不到的 UGC 合集（个人创作者上传）只在 App 的搜索里。
+ *  返回 { id, title, cover, badge, episodeCount, ... }，与网页搜索结果同形状。 */
+async function appSearch(keyword, page) {
+  const json = await fetchJson(`/search?q=${encodeURIComponent(String(keyword || ''))}&page=${page || 1}`, 30000);
+  if (!json || !Array.isArray(json.items)) return [];
+  return json.items.filter(it => it && /^\d{1,30}$/.test(String(it.id || '')));
+}
+
 /** 分集列表：返回 [{ index, id, playable }]，id 是数字 episode_id。 */
 async function episodeIds(seriesId) {
   const json = await fetchJson(`/episodes?series=${encodeURIComponent(String(seriesId))}`);
@@ -552,24 +649,28 @@ async function episodeIds(seriesId) {
   return json.episodes;
 }
 
-/** 按 episode_id 取流，返回与 videoModel 同形状的结果（key 为 32 位 hex）。 */
-async function videoModelByEpisode(episodeId) {
-  if (Date.now() < cooldownUntil) {
-    const left = Math.max(1, Math.ceil((cooldownUntil - Date.now()) / 60000));
+/** 按 episode_id 取流，返回与 videoModel 同形状的结果（key 为 32 位 hex）。
+ *  [opts.album] 强制按 UGC 合集语义取；不传则查登记表（详情走过 albumInfo 就算登记过）。 */
+async function videoModelByEpisode(episodeId, opts) {
+  const album = Boolean(opts && opts.album) || isAlbumVid(episodeId);
+  const kind = album ? 'album' : 'short';
+  if (Date.now() < cooldownUntil[kind]) {
+    const left = Math.max(1, Math.ceil((cooldownUntil[kind] - Date.now()) / 60000));
     throw new Error(`上游限流冷却中（约剩 ${left} 分钟）：继续重试只会让出口 IP 被封更久，请稍后再试`);
   }
   let json;
   try {
-    json = await fetchJson(`/play?episode=${encodeURIComponent(String(episodeId))}`);
+    json = await fetchJson(`/play?episode=${encodeURIComponent(String(episodeId))}${album ? '&album=1' : ''}`);
   } catch (e) {
-    noteEmpty(e.message);
+    noteEmpty(kind, e.message);
     throw e;
   }
   if (!json || !json.url) {
-    noteEmpty((json && json.error) || '取流结果为空');
-    throw new Error((json && json.error) || '取流结果为空');
+    const reason = (json && json.error) || '取流结果为空';
+    noteEmpty(kind, reason);
+    throw new Error(reason);
   }
-  emptyStreak = 0;
+  emptyStreak[kind] = 0;
   return {
     url: json.url,
     altUrls: Array.isArray(json.altUrls) ? json.altUrls : [],
@@ -578,4 +679,4 @@ async function videoModelByEpisode(episodeId) {
   };
 }
 
-module.exports = { videoDetail, videoModel, deriveKey, searchSeries, fetchWebUrl, registerDevice, currentDevice, buildQuery, goEscape, signedPost, signedGet, episodeIds, videoModelByEpisode };
+module.exports = { videoDetail, seriesInfo, albumInfo, markAlbumVids, isAlbumVid, videoModel, deriveKey, searchSeries, appSearch, fetchWebUrl, registerDevice, currentDevice, buildQuery, goEscape, signedPost, signedGet, episodeIds, videoModelByEpisode };

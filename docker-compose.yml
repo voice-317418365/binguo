@@ -10,14 +10,39 @@ services:
     # 只给 veyra-backend 在容器网络内调用，不映射端口到宿主机。
     # 镜像自带 HEALTHCHECK（GET /ready），启动约 20~40 秒才 ready。
 
+  # 红果取流服务（hongguo-fetch）：/episodes、/play、/search，以及 &album=1 的
+  # UGC 合集语义都靠它。上游 v0.31.45 起这个 Go 二进制是**动态链接**（要 glibc 2.34+），
+  # 后端镜像基于 alpine(musl)，二进制在里面直接 "not found"；宿主 CentOS 7 只有
+  # glibc 2.17 也起不来。所以单独用 bookworm-slim 跑它，后端跨容器调用。
+  # 镜像里必须带 ca-certificates，否则 TLS 校验失败会伪装成「transport failure」。
+  hongguo-fetch:
+    build: ./server/fetch
+    image: veyra-hongguo-fetch:latest
+    container_name: veyra-fetch
+    restart: unless-stopped
+    depends_on:
+      - hongguo-signer
+    environment:
+      # 二进制默认只绑 127.0.0.1，别的容器够不着，必须显式改 0.0.0.0
+      - HG_LISTEN=0.0.0.0:18098
+      - HG_SIGNER=http://hongguo-signer:19830
+      - HG_PROFILE=/data/hongguo-profile.json
+    volumes:
+      - ./server/fetch:/f:ro     # 换二进制只要替换文件 + 重启容器，不用重建镜像
+      - ./data:/data
+    command: ["/f/hongguo-fetch-linux-amd64"]
+
   veyra-backend:
     image: gybeyond/veyra-backend:latest
     container_name: veyra
     restart: unless-stopped
     depends_on:
       hongguo-signer:
-        # 签名服务启动约 20~40 秒才 ready，等健康再起后端，避免冷启动期取流全空
-        condition: service_healthy
+        # 只等容器起来，不等健康：签名服务 20~40 秒才 ready，等健康会把后端
+        # 一直卡在 Created，手机端直接表现为「后端连不上」，比冷启动期取流失败更糟。
+        condition: service_started
+      hongguo-fetch:
+        condition: service_started
     ports:
       - "8888:8888"
     environment:
@@ -26,5 +51,7 @@ services:
       - ADMIN_PASSWORD=change-me   # WebUI 管理台密码（务必改为强密码；勿把真实密码提交进仓库）
       # 取流签名服务地址（容器名）。留空会退回内置签名，2026-11-24 之后取流必失败。
       - HG_SIGNER=http://hongguo-signer:19830
+      # 取流服务不跑在本容器里，默认的 127.0.0.1:18098 够不着，得指向独立容器。
+      - HG_FETCH_URL=http://hongguo-fetch:18098
     volumes:
       - ./data:/data            # 用户/任务/头像等数据（APP 只用在线取流，不挂下载目录）

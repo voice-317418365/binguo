@@ -28,6 +28,16 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const https = require('https');
+
+/* 进程级兜底：单个路由里漏 catch 的异步异常在 Node 22 下会直接终止进程，
+   容器 restart 策略只能被动重启（表现为请求中途 502）。这里记日志后继续跑，
+   宁可这一条接口 500，也别让整个后端掉线。 */
+process.on('unhandledRejection', (err) => {
+  console.log('[fatal] unhandledRejection:', (err && err.stack) || err);
+});
+process.on('uncaughtException', (err) => {
+  console.log('[fatal] uncaughtException:', (err && err.stack) || err);
+});
 const downloader = require('./downloader');
 const hgApp = require('./hongguo-app');
 const { createHongguoContent } = require('./hongguo-content');
@@ -395,10 +405,39 @@ const SEARCH_TTL_MS = 5 * 60 * 1000;
 app.get('/api/web/hongguo/search', async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.json({ items: [] });
+
+  /* 直接贴编号或分享链接：UGC 合集（个人创作者上传的多集视频）不参与搜索索引，
+     站内搜不到，只能按 series_id 打开。支持纯数字，以及带 series_id= 的 URL。 */
+  const direct = /^\d{8,20}$/.test(q) ? q
+    : (() => {
+      const m = /[?&](?:series_id|id)=(\d{8,20})/.exec(q) || /\/detail\/(\d{8,20})/.exec(q);
+      return m ? m[1] : '';
+    })();
+  if (direct) {
+    return res.json({
+      items: [{ id: direct, title: '剧集 ' + direct, cover: '', description: '', type: '', badge: '按编号直达', episodeCount: 0, tags: [] }],
+      query: q, direct: true,
+    });
+  }
+
   const hit = searchCache.get(q);
   if (hit && Date.now() - hit.at < SEARCH_TTL_MS) return res.json(hit.data);
   try {
     const data = await hgCatalog.search(q);
+    /* 网页目录只收录站内短剧：UGC 合集与部分新剧只在 App 的搜索里。
+       这里补一遍 App 搜索并按 id 去重，再一起返回。 */
+    try {
+      const extra = await hgApp.appSearch(q, 1);
+      if (extra.length) {
+        const seen = new Set((data.items || []).map(it => String(it.id)));
+        for (const it of extra) {
+          if (seen.has(String(it.id))) continue;
+          seen.add(String(it.id));
+          data.items.push(it);
+        }
+        data.counts = { total: data.items.length };
+      }
+    } catch (e) { console.log('[search] App 搜索兜底失败:', e.message); }
     searchCache.set(q, { at: Date.now(), data });
     while (searchCache.size > 60) searchCache.delete(searchCache.keys().next().value);
     res.json(data);
@@ -408,24 +447,54 @@ app.get('/api/web/hongguo/search', async (req, res) => {
 app.get('/api/web/hongguo/detail', async (req, res) => {
   const id = String(req.query.id || '').trim();
   if (!id) return res.status(400).json({ error: '缺少 id' });
-  curlGet('https://hongguoduanju.com/detail/' + id, 10000, (err, html) => {
-    if (err) return res.status(502).json({ error: '抓取失败: ' + err.message });
-    let raw;
+  // 网页详情的地址是 query 形式（detail?series_id=…）；path 形式 /detail/<id> 2026-11 起一律 404。
+  let raw = {};
+  let vids = [];
+  let isAlbum = false;
+  try {
+    const html = await new Promise((ok, fail) =>
+      curlGet('https://hongguoduanju.com/detail?series_id=' + encodeURIComponent(id), 10000,
+        (err, body) => (err ? fail(err) : ok(body))));
     try { raw = extractRouterData(html).loaderData || {}; }
-    catch (e) { return res.status(502).json({ error: '解析失败: ' + e.message }); }
-    // 从详情页 episode_list 提取每集 vid（供 WebUI 播放 /api/web/hongguo/stream）
-    const eps = (raw.detail_page && raw.detail_page.episode_list) || (raw.episode_list) || [];
-    let vids = eps.map(e => String(e && (e.vid || e.id || '')).trim()).filter(v => v);
-    (async () => {
-      if (!vids.length) {
-        try {
-          const det = await hgApp.videoDetail(id);
-          vids = det.vids || [];
-        } catch (e) { console.log('[detail] videoDetail 兜底失败:', e.message); }
+    catch (e) { console.log('[detail] 页面解析失败:', e.message); }
+  } catch (e) { console.log('[detail] 网页详情抓取失败:', e.message); }
+  const eps = (raw.detail_page && raw.detail_page.episode_list) || (raw.episode_list) || [];
+  vids = eps.map(e => String(e && (e.vid || e.id || '')).trim()).filter(v => v);
+  // 网页版只收录部分片源：搜得到、App 能播，但网页详情 404。这时用 App 详情接口兜底拿分集。
+  if (!vids.length) {
+    try {
+      const det = await hgApp.seriesInfo(id);
+      vids = det.vids || [];
+      if (!raw.detail_page && det.title) {
+        raw = { detail_page: { seriesDetail: {
+          series_id: id, series_name: det.title, series_cover: det.cover, series_intro: '',
+        } } };
       }
-      res.json({ raw, vids });
-    })();
-  });
+      /* video_detail 空壳多两种：还没上线的待播剧，和 UGC 合集（个人创作者的多集视频）。
+         后者的分集挂在 album_detail 下，再问一次就能拿到。 */
+      if (!vids.length) {
+        const album = await hgApp.albumInfo(id).catch(() => null);
+        if (album && album.vids.length) {
+          vids = album.vids;
+          isAlbum = true;
+          if (album.title) {
+            raw = { detail_page: { seriesDetail: {
+              series_id: id, series_name: album.title, series_cover: album.cover, series_intro: '',
+            } } };
+          }
+        } else {
+          /* 剧在库里但一集都没有（待播 / 已下线）：别回 404，让客户端把详情页打开、
+             写一句「暂时没有可播放的剧集」。404 只会变成一屏「找不到这个剧集」。 */
+          return res.json({ raw, vids: [], unavailable: true, label: det.label || '' });
+        }
+      }
+    } catch (e) { console.log('[detail] videoDetail 兜底失败:', e.message); }
+  }
+  if (!vids.length && !raw.detail_page) return res.status(404).json({ error: '没有这个剧集' });
+  /* album=true 告诉客户端这批 vid 属于 UGC 合集，本地直连取流时要换 PUGC 分组；
+     走后端的话后端已经按登记表自动换语义，这个字段只是让两端判断一致。 */
+  res.json({ raw, vids, album: isAlbum });
+  if (vids.length) mapVidsToEpisodes(id, vids);
 });
 
 // 与 APP 同源：short=短剧精选，comic=漫剧热榜，slug=对应大类题材；绝不跨分类回退。
@@ -443,6 +512,16 @@ const { spawn } = require('child_process');
 const SERIES_EP_TTL = 10 * 60 * 1000;
 const vidEpCache = new Map();
 const seriesEpCache = new Map();
+
+// 详情页顺带给出的 vid → episode_id 映射：拿到分集表后登记一份，播放时直接查表，
+// 省掉一次分集查询。数量对不上（合集/待播）就跳过，播放时会再走 resolveEpisodeId。
+function mapVidsToEpisodes(seriesId, vids) {
+  hgApp.episodeIds(seriesId).then(eps => {
+    if (!Array.isArray(eps) || eps.length !== vids.length) return;
+    eps.forEach((e, i) => { if (e && e.id) vidEpCache.set(vids[i], e.id); });
+    while (vidEpCache.size > 5000) vidEpCache.delete(vidEpCache.keys().next().value);
+  }).catch(() => { /* 取流服务不可用时静默跳过，播放时会再试 */ });
+}
 
 async function resolveEpisodeId({ vid, series, episode, title }) {
   const v = String(vid || '').trim();
@@ -485,10 +564,10 @@ async function resolveEpisodeId({ vid, series, episode, title }) {
 
 // 取流只走 hongguo-fetch（完整客户端签名 + 真实 so 签名服务）。
 // 旧 video_model / vid 链路自 2026-11-24 起必然 200 + 0 字节，不再兜底，免得白注册设备。
-async function fetchStream({ vid, series, episode, title }) {
+async function fetchStream({ vid, series, episode, title, album }) {
   const epId = await resolveEpisodeId({ vid, series, episode, title });
   if (!epId) throw new Error('取不到数字 episode_id');
-  return hgApp.videoModelByEpisode(epId);
+  return hgApp.videoModelByEpisode(epId, { album: Boolean(album) });
 }
 
 app.get('/api/web/hongguo/stream', async (req, res) => {
@@ -496,15 +575,16 @@ app.get('/api/web/hongguo/stream', async (req, res) => {
   const series = String(req.query.series || '').trim();
   const episode = String(req.query.episode || '').trim();
   const title = String(req.query.title || '').trim();
+  const album = String(req.query.album || '') === '1' || String(req.query.kind || '') === 'album';
   if (!vid && !(series && episode)) return res.status(400).json({ error: '缺少 vid（或 series + episode）' });
   const safeVid = (vid || series + '-' + episode).replace(/[^a-zA-Z0-9_-]/g, '');
   const streamDir = path.join(os.tmpdir(), 'veyra-stream');
   const outFile = path.join(streamDir, safeVid + '.mp4');
   try { fs.mkdirSync(streamDir, { recursive: true }); } catch { /* ignore */ }
   if (fs.existsSync(outFile) && fs.statSync(outFile).size > 100000) return res.sendFile(outFile);
-  console.log('[stream]', new Date().toISOString(), 'vid', vid || (series + '#' + episode));
+  console.log('[stream]', new Date().toISOString(), 'vid', vid || (series + '#' + episode), album ? '[album]' : '');
   try {
-    const { url: mainUrl, key } = await fetchStream({ vid, series, episode, title });
+    const { url: mainUrl, key } = await fetchStream({ vid, series, episode, title, album });
     const args = ['-hide_banner', '-loglevel', 'error', '-y'];
     if (key && /^[0-9a-fA-F]{32}$/.test(key)) args.push('-decryption_key', key.toLowerCase());
     args.push('-i', mainUrl, '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', outFile);
@@ -553,10 +633,11 @@ app.get('/api/hongguo/play-direct', async (req, res) => {
   const series = String(req.query.series || '').trim();
   const episode = String(req.query.episode || '').trim();
   const title = String(req.query.title || '').trim();
+  const album = String(req.query.album || '') === '1' || String(req.query.kind || '') === 'album';
   if (!vid && !(series && episode)) return res.status(400).json({ error: '缺少 vid（或 series + episode）' });
-  console.log('[play-direct]', new Date().toISOString(), 'vid', vid || (series + '#' + episode));
+  console.log('[play-direct]', new Date().toISOString(), 'vid', vid || (series + '#' + episode), album ? '[album]' : '');
   try {
-    const { url: mainUrl, altUrls, key, quality } = await fetchStream({ vid, series, episode, title });
+    const { url: mainUrl, altUrls, key, quality } = await fetchStream({ vid, series, episode, title, album });
     const result = {
       vid,
       definition: quality || '',

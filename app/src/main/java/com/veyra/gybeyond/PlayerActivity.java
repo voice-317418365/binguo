@@ -1126,8 +1126,11 @@ public final class PlayerActivity extends Activity {
         seeking = false;
         handler.removeCallbacks(previewSeek);
         previewSeekScheduled = false;
-        previewBubble.setVisibility(View.GONE);
-        previewView.setPlayer(null);
+        /* onDestroy 也会调到这里，而它可能在 buildUi() 之前就跑（payload 解析失败、
+           进页面即退出、系统回收）：那时控件还是 null，直接解引用会把 onDestroy 炸成
+           NullPointerException，下次启动弹「检测到上次崩溃」。 */
+        if (previewBubble != null) previewBubble.setVisibility(View.GONE);
+        if (previewView != null) previewView.setPlayer(null);
         if (previewPlayer != null) { previewPlayer.release(); previewPlayer = null; }
         previewBucket = -1;
         lastPreviewRequest = 0;

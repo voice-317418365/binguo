@@ -25,6 +25,8 @@ final class HongguoRepository {
     private static final LruCache<String, Detail> details = new LruCache<>(32);
     private final HongguoGenres genres = new HongguoGenres(upstream.getHttp());
     private final HongguoSearch search = new HongguoSearch(upstream.getHttp());
+    /** 网页详情 404 时的兜底接口（不走网页，直接用 App 协议拿分集）。 */
+    private final HongguoAppApi appApi = new HongguoAppApi();
 
     JSONObject tags() throws Exception { return genres.tags(); }
     JSONObject tagListing(String slug, int page) throws Exception { return genres.listing(slug, page); }
@@ -117,13 +119,200 @@ final class HongguoRepository {
     }
     JSONObject searchSequels(String keyword) throws Exception { return search.search(keyword, true); }
     JSONObject detail(String id) throws Exception {
-        Detail detail = upstream.detail(id);
-        details.put(id, detail);
+        Detail detail = loadDetail(id);
         JSONObject result = card(detail.getSeries(), "");
         JSONArray episodes = new JSONArray();
         for (int i = 0; i < detail.getEpisodes().size(); i++)
             episodes.put(new JSONObject().put("number", i + 1).put("videoId", detail.getEpisodes().get(i)));
-        return result.put("episodes", episodes).put("episodeLabel", "共 " + episodes.length() + " 集");
+        result.put("episodes", episodes);
+        if (episodes.length() == 0) {
+            /* 一部剧一集都没有：站方还没上线（video_detail 回 episode_cnt=0），
+               或者片源全下线。带上 unavailable，前端据此显示说明而不是空选集。 */
+            String label = detail.getSeries().getBadge();
+            result.put("episodeLabel", label == null || label.isEmpty() ? "暂无剧集" : label)
+                    .put("unavailable", true);
+        } else {
+            result.put("episodeLabel", "共 " + episodes.length() + " 集");
+        }
+        return result;
+    }
+
+    /**
+     * 网页详情拿不到时（HTTP 404）改用 App 详情接口凑一份。
+     *
+     * 2026-11 起站方网页版只收录了一部分片源：App 搜索能搜到、能播，但
+     * https://hongguoduanju.com/detail?series_id=… 直接 404，表现就是「搜到点不进详情页」。
+     * App 详情接口（video_detail）不走网页，返回同样的分集列表，用它兜底至少能进页面、能播。
+     * 代价是封面/简介/相关推荐这些只有网页版才有的东西会缺，所以只作为兜底。
+     */
+    private Detail loadDetail(String id) throws Exception {
+        Detail cached = details.get(id);
+        if (cached != null) return cached;
+        Detail detail;
+        try {
+            detail = upstream.detail(id);
+        } catch (Exception error) {
+            /* 2026-11 站方网页分集改成 v1_ 开头的不透明 id，本地解析会抛「分集数据异常」；
+               App 接口又被风控成 200+0B。再把后端详情作为第三层兜底：后端有真 so 签名，
+               能拿到数字 vid（实测同一部剧可正常返回）。 */
+            android.util.Log.w("VeyraDetail", "网页详情失败 id=" + id + "：" + error);
+            detail = detailFromApp(id);
+            if (detail == null || detail.getEpisodes().isEmpty()) {
+                Detail backend = detailFromBackend(id);
+                if (backend != null && (!backend.getEpisodes().isEmpty() || !backend.getSeries().getTitle().isEmpty())) {
+                    detail = backend;
+                }
+            }
+            android.util.Log.w("VeyraDetail", "兜底结果 id=" + id + " -> "
+                    + (detail == null ? "null" : detail.getEpisodes().size() + " 集 / " + detail.getSeries().getTitle()));
+            if (detail == null) {
+                /* 三层都拿不到（网页分集异常 + App 风控 + 后端不可达）：把原错误抛回去。
+                   不返回「暂无剧集」占位——那会把网络故障伪装成「剧没上线」，更难排查。
+                   真正的待播剧会让 App 返回标题但 0 集，走到上面的 detailFromApp 分支。 */
+                throw error;
+            }
+        }
+        details.put(id, detail);
+        return detail;
+    }
+
+    /**
+     * UGC 合集（个人创作者上传的多集视频）的 series id。
+     *
+     * 这类内容的分集取流要按 PUGC 分组走，和普通短剧不是一套语义：
+     * 用短剧语义请求站方只会回 101000 或 200 + 空正文，表现就是「有 10 集，点哪集都不播」。
+     * 详情走过 album 兜底就记下来，取流时告诉后端换语义。
+     */
+    private static final java.util.Set<String> ALBUM_SERIES =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+
+    /** App 详情接口兜底；连元信息都拿不到返回 null，由调用方退回占位详情。 */
+    private Detail detailFromApp(String id) {
+        JSONObject app = appApi.fetch(id);
+        /* video_detail 被风控成 200+0B 时 app 为 null；UGC 合集的分集其实在 album_detail 里，
+           单独一个接口，不能因为 video_detail 空就直接放弃。 */
+        java.util.List<String> episodes = app == null
+                ? new java.util.ArrayList<String>(0) : vidsOf(app);
+        String title = app == null ? "" : app.optString("series_title", "");
+        String cover = app == null ? "" : app.optString("series_cover", "");
+        String intro = app == null ? "" : app.optString("series_intro", "");
+        String label = app == null ? "" : app.optString("episode_label", "");
+        if (episodes.isEmpty()) {
+            /* video_detail 是个空壳时（content_type 1003、episode_cnt 0、video_list 空），
+               多半是 UGC 合集——个人创作者上传的多集视频。它的分集挂在 album_detail 下，
+               album_id 就是搜索给的那个 series_id，每集的 series_id 就是取流用的 vid。
+               以前只看 video_detail，于是这类合集被当成「一集都没有」。 */
+            JSONObject album = appApi.album(id);
+            if (album != null) {
+                episodes = vidsOf(album);
+                if (!episodes.isEmpty()) ALBUM_SERIES.add(id);
+                if (title.isEmpty()) title = album.optString("title", "");
+                if (cover.isEmpty()) cover = album.optString("cover", "");
+                if (intro.isEmpty()) intro = album.optString("intro", "");
+                if (label.isEmpty()) label = album.optString("label", "");
+            }
+        }
+        if (episodes.isEmpty() && title.isEmpty()) return null;
+        if (title.isEmpty()) title = "剧集 " + id;
+        if (label.isEmpty()) label = episodes.isEmpty() ? "暂无剧集" : "共 " + episodes.size() + " 集";
+        return new Detail(new Series(id, title, cover, intro, label, ""), episodes);
+    }
+
+    /**
+     * 第三层兜底：问我们自己的后端要详情。
+     *
+     * 2026-11 站方网页把分集 id 换成 v1_ 开头的不透明串，本地解析会抛「分集数据异常」；
+     * 红果 App 的 video_detail 又对第三方回 200+0B。后端有真 so 签名，仍能拿到数字 vid。
+     * 标题/封面再尽量从网页补一次（网页分集不可用，但元信息还在）。
+     */
+    private Detail detailFromBackend(String id) {
+        String base;
+        try {
+            base = ServerConfig.get(HongguoDirect.context());
+        } catch (Throwable ignored) {
+            return null;
+        }
+        if (base == null || base.trim().isEmpty()) return null;
+        try {
+            String endpoint = base.trim().replaceAll("/+$", "") + "/api/web/hongguo/detail?id=" + id;
+            Request request = new Request.Builder().url(endpoint)
+                    .header("Accept", "application/json").get().build();
+            JSONObject json;
+            try (Response response = upstream.getHttp().newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) return null;
+                String text = response.body().string();
+                if (text.trim().isEmpty()) return null;
+                json = new JSONObject(text);
+            }
+            JSONArray arr = json.optJSONArray("vids");
+            java.util.List<String> episodes = new java.util.ArrayList<>();
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                String vid = arr.optString(i, "");
+                if (!vid.matches("[0-9]{1,30}")) return null;
+                episodes.add(vid);
+            }
+            String title = "", cover = "", intro = "", label = "";
+            JSONObject raw = json.optJSONObject("raw");
+            JSONObject page = raw == null ? null : raw.optJSONObject("detail_page");
+            JSONObject series = page == null ? null : page.optJSONObject("seriesDetail");
+            if (series != null) {
+                title = series.optString("series_name", "");
+                cover = series.optString("series_cover", "");
+                intro = series.optString("series_intro", "");
+                label = series.optString("episode_right_text", "");
+            }
+            if (title.isEmpty() || cover.isEmpty()) {
+                String html = fetchSite("https://hongguoduanju.com/detail?series_id=" + id);
+                if (html != null) {
+                    try {
+                        JSONObject data = ContentRepository.Companion.extractRouter(html);
+                        JSONObject ld = data.optJSONObject("loaderData");
+                        JSONObject dp = ld == null ? null : ld.optJSONObject("detail_page");
+                        JSONObject sd = dp == null ? null : dp.optJSONObject("seriesDetail");
+                        if (sd != null) {
+                            if (title.isEmpty()) title = sd.optString("series_name", "");
+                            if (cover.isEmpty()) cover = sd.optString("series_cover", "");
+                            if (intro.isEmpty()) intro = sd.optString("series_intro", "");
+                            if (label.isEmpty()) label = sd.optString("episode_right_text", "");
+                        }
+                    } catch (Exception ignored) { /* 元信息拿不到就留空 */ }
+                }
+            }
+            if (episodes.isEmpty() && title.isEmpty()) return null;
+            if (title.isEmpty()) title = "剧集 " + id;
+            if (label.isEmpty()) label = episodes.isEmpty() ? "暂无剧集" : "共 " + episodes.size() + " 集";
+            return new Detail(new Series(id, title, cover, intro, label, ""), episodes);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private String fetchSite(String url) {
+        try {
+            Request request = new Request.Builder().url(url)
+                    .header("User-Agent", "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; "
+                            + "25053RT47C; Build/BP2A.250605.031.A3)")
+                    .header("Accept-Language", "zh-CN,zh;q=0.9")
+                    .get().build();
+            try (Response response = upstream.getHttp().newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) return null;
+                return response.body().string();
+            }
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 读接口里的 vids 数组；中间有空洞就当整份不可用（播放要按集序对齐）。 */
+    private static java.util.List<String> vidsOf(JSONObject source) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        JSONArray vids = source.optJSONArray("vids");
+        for (int i = 0; vids != null && i < vids.length(); i++) {
+            String vid = vids.optString(i, "");
+            if (vid.isEmpty()) return new java.util.ArrayList<>(0);
+            out.add(vid);
+        }
+        return out;
     }
     /*
      * 播放地址缓存：同一集反复点开不该每次都重新签名取流（一次 resolve = 拼设备参数 +
@@ -147,8 +336,8 @@ final class HongguoRepository {
         JSONObject cached = episodes.get(cacheKey);
         Long at = episodeAt.get(cacheKey);
         if (cached != null && at != null && System.currentTimeMillis() - at < EPISODE_TTL_MS) return cached;
-        Detail detail = details.get(id);
-        if (detail == null) { detail = upstream.detail(id); details.put(id, detail); }
+        Detail detail = loadDetail(id);
+        if (detail.getEpisodes().isEmpty()) throw new IllegalArgumentException("这部剧暂时没有可播放的剧集");
         if (number < 1 || number > detail.getEpisodes().size()) throw new IllegalArgumentException("无效集数");
         String vid = detail.getEpisodes().get(number - 1);
         StreamInfo info = resolveStream(id, vid, background);
@@ -190,8 +379,9 @@ final class HongguoRepository {
     private static final long FRESH_TIMEOUT_MS = 9000L;
 
     private StreamInfo resolveStream(String id, String vid, boolean background) throws Exception {
+        final boolean album = ALBUM_SERIES.contains(id);
         java.util.concurrent.Future<StreamInfo> task =
-                RESOLVE_POOL.submit(() -> HongguoDirect.fetch(vid, background));
+                RESOLVE_POOL.submit(() -> HongguoDirect.fetch(vid, background, album));
         try {
             StreamInfo info = task.get(FRESH_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
             if (info != null && info.getUrl() != null && info.getUrl().startsWith("http")) {

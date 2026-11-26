@@ -2,6 +2,35 @@
 
 版本号沿用自建线 `0.28.14xx`（versionCode `414xx`），与上游 `v0.28.x` 区分开。APK 与 `dist/latest.json` 属于发布产物，`dist/` 已加入 `.gitignore`，变更记录以本文件为准。
 
+## 0.28.1439（2026-11-27）
+
+合入上游 `v0.31.35`~`v0.31.45`（11 个提交 / 15 文件）的 UGC 合集支持。此前个人创作者上传的多集视频（`word_type=album`）不参与网页搜索索引，详情接口只回空壳，表现为「搜得到名字、打开是空的」。同时站方把网页详情的分集 vid 换成了 `v1_...` 不透明串，原来那层网页解析整体失效。
+
+### 新增
+
+- **UGC 合集全链打通**：详情三层兜底（网页 → App `video_detail` / `album_detail` → 自建后端真 so 签名），合集按 `album_detail` 取分集；取流按 PUGC 分组（`&album=1`），合集每一集都能正常出片。
+- **按编号 / 链接直达**：搜索框直接粘剧集编号或分享链接即可打开，不再依赖站内索引。
+- **App 搜索兜底**：搜索结果合并 App `/search`，把网页索引里没有的合集与新剧补进来。
+- **明文片源直通**：返回里 `encrypt` 为 null 时按明文处理，不再因缺内容密钥误判成失败。
+
+### 改动
+
+- 服务端冷却分离：`short` / `album` 两档独立计数，只有真 200/0B 才计数，时长 10 → 5 分钟。
+- `hongguo-fetch` 换上游 `v0.31.45`（新增 `/search`、`/play?...&album=1`、`/episodes` 语义修正）。
+- 取流服务改独立容器：上游新二进制是动态链接（要 glibc 2.34+），alpine 里 `not found`、CentOS 7 宿主缺 `GLIBC_2.34`，改用 `debian:bookworm-slim` 单跑，后端经 `HG_FETCH_URL` 跨容器调用。
+
+### 修复
+
+- 服务端详情接口缺 `mapVidsToEpisodes` 定义，请求一进来就 `ReferenceError` 把 Node 进程带走（容器反复重启）。补上定义，并加进程级 `unhandledRejection` / `uncaughtException` 兜底，单条路由出错不再掉整个后端。
+- nginx 在后端容器重建后持续 502：`proxy_pass` 只在启动时解析一次域名，容器换 IP 就跟丢。改用 Docker 内置 DNS（`resolver 127.0.0.11 valid=10s`）。
+- 退出播放页偶发「检测到上次崩溃」：`stopSeekPreview()` 在控件还没创建时被 `onDestroy` 调到，`previewBubble` 为 null 直接 NPE。
+
+### 说明
+
+- 账号同步（aid=8662 / passport / `read_history` / `read_progress`）、更新检查、品牌图标、1.5 倍速均未改动。
+- 网页镜像站的 `/home` 与 `/category` 已改版失效（App 首页走 App 接口，不受影响），本版未处理。
+- 本次未出电视包。
+
 ## 0.28.1438（2026-11-25）
 
 合入上游 `v0.31.25`~`v0.31.34`（2026-11-24 批次，13 个提交）的红果取流换代。站方自 11-24 起只接受 App 自带 `libmetasec_ml.so` 产出的播放签名，内置移植版（Java 重写的 Gorgon / Argus / Ladon / Medusa）一律返回 `HTTP 200 + 空正文`，表现为「能进详情页但播不出 / 只出试看」。

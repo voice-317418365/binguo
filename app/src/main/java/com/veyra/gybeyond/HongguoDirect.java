@@ -110,6 +110,8 @@ final class HongguoDirect {
     private static final Map<String, Object[]> RECENT = new java.util.concurrent.ConcurrentHashMap<>();
     /** 最近一次取址的形态（状态码/正文长度），只进错误文案，不含地址与凭据。 */
     private static final ThreadLocal<String> LAST_PROBE = new ThreadLocal<>();
+    /** 后端这次失败的原因（HTTP 码 / 空正文 / 后端自述的路由结果），单独记，避免和本地的混在一起。 */
+    private static final ThreadLocal<String> BACKEND_NOTE = new ThreadLocal<>();
 
     static void init(Context context) {
         appContext = context == null ? null : context.getApplicationContext();
@@ -120,6 +122,9 @@ final class HongguoDirect {
             }
         }
     }
+
+    /** 应用上下文：详情兜底问后端时要用它读服务器地址。 */
+    static Context context() { return appContext; }
 
     private static synchronized Device loadIdentity() {
         if (appContext == null) return null;
@@ -202,7 +207,7 @@ final class HongguoDirect {
      * @return 直链 + CENC 密钥 + 清晰度
      */
     static StreamInfo fetch(String vid) throws Exception {
-        return fetch(vid, false);
+        return fetch(vid, false, false);
     }
 
     /**
@@ -210,6 +215,14 @@ final class HongguoDirect {
      * 预热把请求打光了，用户真正点播放时反而只能吃「稍后再试」。
      */
     static StreamInfo fetch(String vid, boolean background) throws Exception {
+        return fetch(vid, background, false);
+    }
+
+    /**
+     * @param album 这一集属于 UGC 合集（个人创作者上传的多集视频）。
+     *              这类分集要后端按 PUGC 分组（1001）取址，按普通短剧语义只会回空。
+     */
+    static StreamInfo fetch(String vid, boolean background, boolean album) throws Exception {
         if (vid == null || !vid.matches("[0-9]{1,30}")) throw new IOException("分集编号无效");
 
         /* 刚刚连续吃空正文：现在再打只会让上游把身份和出口 IP 一起判死，
@@ -218,7 +231,7 @@ final class HongguoDirect {
         if (cooling > 0 && System.currentTimeMillis() - cooling < EMPTY_COOLDOWN_MS) {
             if (background) throw new IOException("上游刚返回空片源，跳过预热");
             /* 上游刚空，本地这套签名注定拿不到；冷却期内先问后端（真实 so 签名）。 */
-            StreamInfo remoteCooling = fetchFromBackend(vid);
+            StreamInfo remoteCooling = fetchFromBackend(vid, album);
             if (remoteCooling != null) {
                 lastAllEmptyAt = 0L;
                 consecutiveEmpty = 0;
@@ -268,13 +281,16 @@ final class HongguoDirect {
         /* 本地三层全空：交给 Veyra 后端。那边跑 openhongguo-signer（unidbg + App 自带
            libmetasec_ml.so），签名是站方认的那一份；2026-11-24 起本地这套移植签名
            无论哪一档常量都只回 200 + 空正文。 */
-        StreamInfo remote = fetchFromBackend(vid);
+        StreamInfo remote = fetchFromBackend(vid, album);
         if (remote != null) {
             lastAllEmptyAt = 0L;
             consecutiveEmpty = 0;
             remember(vid, remote);
             return remote;
         }
+
+        String backendNote = BACKEND_NOTE.get();
+        if (backendNote != null) errors.add("后端 " + backendNote);
 
         /* 兜底：这一集最近成功播过，地址还在有效期内，就直接复用
          * （hongguoTV 0.16.11 的同一做法：新请求只用来验证，不为拿地址再撞一次接口）。
@@ -296,7 +312,7 @@ final class HongguoDirect {
      * 只在本地三层全失败后调用；后端没配、连不上或返回异常时返回 null，
      * 不改变原有失败文案。
      */
-    private static StreamInfo fetchFromBackend(String vid) {
+    private static StreamInfo fetchFromBackend(String vid, boolean album) {
         if (appContext == null) return null;
         String base;
         try {
@@ -305,7 +321,9 @@ final class HongguoDirect {
             return null;
         }
         if (base == null || base.trim().isEmpty()) return null;
-        String endpoint = base.trim().replaceAll("/+$", "") + "/api/hongguo/play-direct?vid=" + vid;
+        String endpoint = base.trim().replaceAll("/+$", "") + "/api/hongguo/play-direct?vid=" + vid
+                + (album ? "&album=1" : "");
+        BACKEND_NOTE.remove();
         StreamInfo info = backendStream(QUICK, endpoint);
         if (info == null) info = backendStream(HTTP, endpoint);
         return info;
@@ -321,22 +339,53 @@ final class HongguoDirect {
             try (Response response = client.newCall(request).execute()) {
                 if (!response.isSuccessful() || response.body() == null) {
                     LAST_PROBE.set("backend/HTTP " + response.code());
+                    BACKEND_NOTE.set("HTTP " + response.code());
                     return null;
                 }
                 String text = new String(response.body().bytes(), StandardCharsets.UTF_8);
-                if (text.trim().isEmpty()) return null;
+                if (text.trim().isEmpty()) {
+                    LAST_PROBE.set("backend/200-0B");
+                    BACKEND_NOTE.set("200 空正文");
+                    return null;
+                }
                 JSONObject json = new JSONObject(text);
                 String main = json.optString("main_url", "");
-                if (main.isEmpty()) return null;
+                if (main.isEmpty()) {
+                    /* 后端的错误文案比本地这三层有用得多：它知道自己是哪条路由空的
+                       （V5/1001、播放器入口、旧接口），会写在 error 字段里。 */
+                    String error = json.optString("error", "");
+                    LAST_PROBE.set("backend/" + (error.isEmpty() ? "无直链" : clip(error)));
+                    BACKEND_NOTE.set(error.isEmpty() ? "返回里没有直链" : clip(error));
+                    return null;
+                }
                 JSONObject encrypt = json.optJSONObject("encrypt");
                 String hexKey = encrypt == null ? "" : encrypt.optString("key", "");
-                if (!hexKey.matches("[0-9a-fA-F]{32,64}")) return null;
-                return new StreamInfo(main, HongguoSign551.hex(hexKey), json.optString("definition", ""));
+                /* encrypt 为 null 是合法返回：UGC 合集与部分片源是明文 mp4，没有 CENC 密钥。
+                   以前这里一律要求 32~64 位 hex，明文流被当成「后端没给密钥」丢掉 ——
+                   表现就是普通短剧能播、个人创作者上传的合集一集都播不了。
+                   MediaCrypto 对 key=null 本来就是明文直通（prepare/decrypt 都直接返回原数据）。 */
+                byte[] key = null;
+                if (encrypt != null) {
+                    if (!hexKey.matches("[0-9a-fA-F]{32,64}")) {
+                        LAST_PROBE.set("backend/缺密钥");
+                        BACKEND_NOTE.set("返回里没有内容密钥");
+                        return null;
+                    }
+                    key = HongguoSign551.hex(hexKey);
+                }
+                return new StreamInfo(main, key, json.optString("definition", ""));
             }
         } catch (Throwable error) {
             LAST_PROBE.set("backend/不可达");
+            BACKEND_NOTE.set("连不上（服务器地址填错 / 后端没起来）");
             return null;
         }
+    }
+
+    /** 后端错误文案截断：气泡里放不下整段，取前 60 个字够定位。 */
+    private static String clip(String text) {
+        String one = text.replace('\n', ' ').trim();
+        return one.length() <= 60 ? one : one.substring(0, 60) + "…";
     }
 
     private static void pause(long millis) throws IOException {
