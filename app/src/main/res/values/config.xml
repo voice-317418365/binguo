@@ -1,4 +1,7 @@
 <resources>
-    <!-- 通用版：不内置任何后端域名，登录/注册时由用户填写服务器地址 -->
-    <string name="api_base_url" translatable="false"></string>
+    <!-- 彬果定制版：内置自建后端地址，装完即用，不需要用户填。
+         通用版上游这里是空串（让用户登录时自己填），但本项目的「免登录」补丁
+         会跳过登录页，于是没人有机会填地址 —— UGC 合集的第三层详情兜底就永远
+         是「未配置服务器地址」。改这里即可，用户仍可在设置里覆盖。 -->
+    <string name="api_base_url" translatable="false">http://101.201.32.104/</string>
 </resources>

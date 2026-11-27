@@ -159,5 +159,23 @@ elif "glass: 'off'," in ap:
 else:
     report.append("玻璃材质默认: 未找到 (指官方改了 DEFAULT 结构)")
 
+# ---------- 7. 默认后端地址 ----------
+# 「免登录」补丁跳过了登录页，用户没有机会填服务器地址，而上游把这里的默认值
+# 留成了空串 —— 表现为「详情兜底永远不问后端」。这里补上自建后端，用户仍可在设置里覆盖。
+# 幂等：已经是目标值就跳过；将来重放官方新版快照时会自动补回来。
+CONFIG = "app/src/main/res/values/config.xml"
+BACKEND = "http://101.201.32.104/"
+cfg = read(CONFIG)
+pat = re.compile(r'(<string name="api_base_url" translatable="false">)([^<]*)(</string>)')
+m = pat.search(cfg)
+if not m:
+    report.append("默认后端地址: 未找到 api_base_url（官方可能改了结构）")
+elif m.group(2).strip() == BACKEND:
+    report.append("默认后端地址: 已是 %s" % BACKEND)
+else:
+    cfg = pat.sub(lambda mm: mm.group(1) + BACKEND + mm.group(3), cfg, count=1)
+    write(CONFIG, cfg)
+    report.append("默认后端地址: %r -> %s" % (m.group(2), BACKEND))
+
 for line in report:
     print(line)

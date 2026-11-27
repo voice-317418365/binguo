@@ -445,7 +445,9 @@ app.get('/api/web/hongguo/search', async (req, res) => {
 });
 
 app.get('/api/web/hongguo/detail', async (req, res) => {
-  const id = String(req.query.id || '').trim();
+  // 兼容两种参数名：客户端历史版本有用 series_id 的（网页详情就是这么传的），
+  // 之前只认 id，传 series_id 直接 400「缺少 id」，排查时很难看出是参数名的问题。
+  const id = String(req.query.id || req.query.series_id || '').trim();
   if (!id) return res.status(400).json({ error: '缺少 id' });
   // 网页详情的地址是 query 形式（detail?series_id=…）；path 形式 /detail/<id> 2026-11 起一律 404。
   let raw = {};

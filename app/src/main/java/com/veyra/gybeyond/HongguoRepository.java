@@ -38,6 +38,33 @@ final class HongguoRepository {
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .callTimeout(75, java.util.concurrent.TimeUnit.SECONDS)
             .build();
+
+    /*
+     * 三层兜底以前每层失败都是静默 return null，用户只看到一句「分集数据异常」，
+     * 分不清是站方改了数据、App 接口被风控、手机没连上后端，还是压根没走到这一层。
+     * 现在每层把原因记进 notes，最后拼进异常消息，界面直接显示「哪一层、什么原因」。
+     */
+    private static void note(java.util.List<String> notes, String reason) {
+        if (notes != null && reason != null && !reason.isEmpty()) notes.add(reason);
+    }
+
+    private static String brief(Throwable error) {
+        if (error == null) return "未知错误";
+        String message = error.getMessage();
+        if (message == null || message.trim().isEmpty()) message = error.getClass().getSimpleName();
+        return message.length() > 60 ? message.substring(0, 60) + "…" : message;
+    }
+
+    /** App 版本号。写进请求头，服务端 nginx 日志能直接看出是哪一版发的请求。 */
+    private static String appVersion() {
+        android.content.Context context = HongguoDirect.context();
+        if (context == null) return "?";
+        try {
+            return context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName;
+        } catch (Throwable ignored) {
+            return "?";
+        }
+    }
     /** 网页详情 404 时的兜底接口（不走网页，直接用 App 协议拿分集）。 */
     private final HongguoAppApi appApi = new HongguoAppApi();
 
@@ -162,27 +189,31 @@ final class HongguoRepository {
         Detail cached = details.get(id);
         if (cached != null) return cached;
         Detail detail;
+        java.util.List<String> notes = new java.util.ArrayList<>();
         try {
             detail = upstream.detail(id);
         } catch (Exception error) {
             /* 2026-11 站方网页分集改成 v1_ 开头的不透明 id，本地解析会抛「分集数据异常」；
                App 接口又被风控成 200+0B。再把后端详情作为第三层兜底：后端有真 so 签名，
                能拿到数字 vid（实测同一部剧可正常返回）。 */
+            note(notes, "网页:" + brief(error));
             android.util.Log.w("VeyraDetail", "网页详情失败 id=" + id + "：" + error);
-            detail = detailFromApp(id);
+            detail = detailFromApp(id, notes);
             if (detail == null || detail.getEpisodes().isEmpty()) {
-                Detail backend = detailFromBackend(id);
+                Detail backend = detailFromBackend(id, notes);
                 if (backend != null && (!backend.getEpisodes().isEmpty() || !backend.getSeries().getTitle().isEmpty())) {
                     detail = backend;
                 }
             }
             android.util.Log.w("VeyraDetail", "兜底结果 id=" + id + " -> "
-                    + (detail == null ? "null" : detail.getEpisodes().size() + " 集 / " + detail.getSeries().getTitle()));
+                    + (detail == null ? "null" : detail.getEpisodes().size() + " 集 / " + detail.getSeries().getTitle())
+                    + "  原因=" + notes);
             if (detail == null) {
-                /* 三层都拿不到（网页分集异常 + App 风控 + 后端不可达）：把原错误抛回去。
+                /* 三层都拿不到（网页分集异常 + App 风控 + 后端不可达）：把原错误连同三层原因抛回去。
                    不返回「暂无剧集」占位——那会把网络故障伪装成「剧没上线」，更难排查。
                    真正的待播剧会让 App 返回标题但 0 集，走到上面的 detailFromApp 分支。 */
-                throw error;
+                String cause = notes.isEmpty() ? "" : "（" + android.text.TextUtils.join(" / ", notes) + "）";
+                throw new java.io.IOException(brief(error) + cause);
             }
         }
         details.put(id, detail);
@@ -200,8 +231,15 @@ final class HongguoRepository {
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
 
     /** App 详情接口兜底；连元信息都拿不到返回 null，由调用方退回占位详情。 */
-    private Detail detailFromApp(String id) {
-        JSONObject app = appApi.fetch(id);
+    private Detail detailFromApp(String id, java.util.List<String> notes) {
+        JSONObject app;
+        try {
+            app = appApi.fetch(id);
+        } catch (Throwable error) {
+            note(notes, "App接口:" + brief(error));
+            android.util.Log.w("VeyraDetail", "App 详情异常 id=" + id + "：" + error);
+            app = null;
+        }
         /* video_detail 被风控成 200+0B 时 app 为 null；UGC 合集的分集其实在 album_detail 里，
            单独一个接口，不能因为 video_detail 空就直接放弃。 */
         java.util.List<String> episodes = app == null
@@ -211,11 +249,18 @@ final class HongguoRepository {
         String intro = app == null ? "" : app.optString("series_intro", "");
         String label = app == null ? "" : app.optString("episode_label", "");
         if (episodes.isEmpty()) {
+            if (app == null) note(notes, "App接口:video_detail 空响应");
             /* video_detail 是个空壳时（content_type 1003、episode_cnt 0、video_list 空），
                多半是 UGC 合集——个人创作者上传的多集视频。它的分集挂在 album_detail 下，
                album_id 就是搜索给的那个 series_id，每集的 series_id 就是取流用的 vid。
                以前只看 video_detail，于是这类合集被当成「一集都没有」。 */
-            JSONObject album = appApi.album(id);
+            JSONObject album;
+            try {
+                album = appApi.album(id);
+            } catch (Throwable error) {
+                note(notes, "album_detail:" + brief(error));
+                album = null;
+            }
             if (album != null) {
                 episodes = vidsOf(album);
                 if (!episodes.isEmpty()) ALBUM_SERIES.add(id);
@@ -223,6 +268,8 @@ final class HongguoRepository {
                 if (cover.isEmpty()) cover = album.optString("cover", "");
                 if (intro.isEmpty()) intro = album.optString("intro", "");
                 if (label.isEmpty()) label = album.optString("label", "");
+            } else if (app != null) {
+                note(notes, "album_detail 无数据");
             }
         }
         if (episodes.isEmpty() && title.isEmpty()) return null;
@@ -238,32 +285,56 @@ final class HongguoRepository {
      * 红果 App 的 video_detail 又对第三方回 200+0B。后端有真 so 签名，仍能拿到数字 vid。
      * 标题/封面再尽量从网页补一次（网页分集不可用，但元信息还在）。
      */
-    private Detail detailFromBackend(String id) {
+    private Detail detailFromBackend(String id, java.util.List<String> notes) {
         String base;
         try {
             base = ServerConfig.get(HongguoDirect.context());
-        } catch (Throwable ignored) {
+        } catch (Throwable error) {
+            note(notes, "后端:读配置失败");
+            android.util.Log.w("VeyraDetail", "后端配置读取失败 id=" + id + "：" + error);
             return null;
         }
         if (base == null || base.trim().isEmpty()) {
             /* 没配服务器地址时这一层形同不存在。老版本默认地址是空的（通用版让用户自己填），
                所以这里必须留痕，否则排查时会误以为「后端也拿不到」而不是「根本没问过后端」。 */
+            note(notes, "后端:未配置服务器地址");
             android.util.Log.w("VeyraDetail", "后端详情跳过 id=" + id + "：未配置服务器地址");
             return null;
         }
         try {
             String endpoint = base.trim().replaceAll("/+$", "") + "/api/web/hongguo/detail?id=" + id;
-            Request request = new Request.Builder().url(endpoint)
-                    .header("Accept", "application/json").get().build();
             JSONObject json;
-            try (Response response = BACKEND_HTTP.newCall(request).execute()) {
-                String text = response.body() == null ? "" : response.body().string();
-                if (!response.isSuccessful() || text.trim().isEmpty()) {
-                    android.util.Log.w("VeyraDetail", "后端详情失败 id=" + id
-                            + "：HTTP " + response.code() + " / " + text.length() + "B");
-                    return null;
+            /* 偶尔一次连不上（切网络、信号抖动）不该直接判死：重试一次，第二次仍失败才认。
+               超时类错误同样重试——后端跑真签名，忙时偶发一次慢返回很常见。 */
+            int attempts = 2;
+            for (int attempt = 1; ; attempt++) {
+                Request request = new Request.Builder().url(endpoint)
+                        .header("Accept", "application/json")
+                        .header("User-Agent", "Veyra/" + appVersion() + " (Android)")
+                        .get().build();
+                try (Response response = BACKEND_HTTP.newCall(request).execute()) {
+                    String text = response.body() == null ? "" : response.body().string();
+                    if (!response.isSuccessful() || text.trim().isEmpty()) {
+                        note(notes, "后端:HTTP " + response.code() + "/" + text.length() + "B");
+                        android.util.Log.w("VeyraDetail", "后端详情失败 id=" + id
+                                + "：HTTP " + response.code() + " / " + text.length() + "B");
+                        return null;
+                    }
+                    json = new JSONObject(text);
+                    break;
+                } catch (java.io.IOException error) {
+                    if (attempt >= attempts) {
+                        note(notes, "后端:网络不可达(" + brief(error) + ")");
+                        android.util.Log.w("VeyraDetail", "后端详情网络失败 id=" + id + "：" + error);
+                        return null;
+                    }
+                    android.util.Log.w("VeyraDetail", "后端详情重试 id=" + id + "：" + error);
+                    try { Thread.sleep(400); } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        note(notes, "后端:网络不可达(被中断)");
+                        return null;
+                    }
                 }
-                json = new JSONObject(text);
             }
             JSONArray arr = json.optJSONArray("vids");
             java.util.List<String> episodes = new java.util.ArrayList<>();
@@ -305,13 +376,19 @@ final class HongguoRepository {
                     } catch (Exception ignored) { /* 元信息拿不到就留空 */ }
                 }
             }
-            if (episodes.isEmpty() && title.isEmpty()) return null;
+            if (episodes.isEmpty() && title.isEmpty()) {
+                note(notes, "后端:返回 0 集且无标题");
+                android.util.Log.w("VeyraDetail", "后端详情空 id=" + id + "：vids="
+                        + (arr == null ? "null" : arr.length()) + " 跳过=" + skipped);
+                return null;
+            }
             if (title.isEmpty()) title = "剧集 " + id;
             if (label.isEmpty()) label = episodes.isEmpty() ? "暂无剧集" : "共 " + episodes.size() + " 集";
             return new Detail(new Series(id, title, cover, intro, label, ""), episodes);
         } catch (Throwable error) {
             /* 以前这里是空的 catch，网络/解析异常全被吞掉，日志里只剩「兜底结果 null」，
                分不清是后端没数据还是请求根本没成功。 */
+            note(notes, "后端:" + brief(error));
             android.util.Log.w("VeyraDetail", "后端详情异常 id=" + id + "：" + error);
             return null;
         }
