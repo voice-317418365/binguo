@@ -25,6 +25,19 @@ final class HongguoRepository {
     private static final LruCache<String, Detail> details = new LruCache<>(32);
     private final HongguoGenres genres = new HongguoGenres(upstream.getHttp());
     private final HongguoSearch search = new HongguoSearch(upstream.getHttp());
+    /*
+     * 详情兜底专用的 HTTP 客户端。
+     *
+     * upstream.getHttp() 是 new OkHttpClient()，读超时只有 10 秒；而自建后端的
+     * /api/web/hongguo/detail 要跑真 so 签名，上游一忙就要十几秒才回。
+     * 超时后兜底返回 null，前端只能抛「分集数据异常」——看起来像站方数据不对，
+     * 实际是本地等不及。这里单独放宽到 60 秒读 / 75 秒整通，别和网页请求混用。
+     */
+    private static final OkHttpClient BACKEND_HTTP = new OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(75, java.util.concurrent.TimeUnit.SECONDS)
+            .build();
     /** 网页详情 404 时的兜底接口（不走网页，直接用 App 协议拿分集）。 */
     private final HongguoAppApi appApi = new HongguoAppApi();
 
@@ -232,24 +245,38 @@ final class HongguoRepository {
         } catch (Throwable ignored) {
             return null;
         }
-        if (base == null || base.trim().isEmpty()) return null;
+        if (base == null || base.trim().isEmpty()) {
+            /* 没配服务器地址时这一层形同不存在。老版本默认地址是空的（通用版让用户自己填），
+               所以这里必须留痕，否则排查时会误以为「后端也拿不到」而不是「根本没问过后端」。 */
+            android.util.Log.w("VeyraDetail", "后端详情跳过 id=" + id + "：未配置服务器地址");
+            return null;
+        }
         try {
             String endpoint = base.trim().replaceAll("/+$", "") + "/api/web/hongguo/detail?id=" + id;
             Request request = new Request.Builder().url(endpoint)
                     .header("Accept", "application/json").get().build();
             JSONObject json;
-            try (Response response = upstream.getHttp().newCall(request).execute()) {
-                if (!response.isSuccessful() || response.body() == null) return null;
-                String text = response.body().string();
-                if (text.trim().isEmpty()) return null;
+            try (Response response = BACKEND_HTTP.newCall(request).execute()) {
+                String text = response.body() == null ? "" : response.body().string();
+                if (!response.isSuccessful() || text.trim().isEmpty()) {
+                    android.util.Log.w("VeyraDetail", "后端详情失败 id=" + id
+                            + "：HTTP " + response.code() + " / " + text.length() + "B");
+                    return null;
+                }
                 json = new JSONObject(text);
             }
             JSONArray arr = json.optJSONArray("vids");
             java.util.List<String> episodes = new java.util.ArrayList<>();
+            int skipped = 0;
             for (int i = 0; arr != null && i < arr.length(); i++) {
                 String vid = arr.optString(i, "");
-                if (!vid.matches("[0-9]{1,30}")) return null;
+                /* 单个 vid 形态不对不该让整批作废：站方偶发会混一两个占位值进来，
+                   以前这里 return null，等于「75 集里有一个不合法就整部剧打不开」。 */
+                if (!vid.matches("[0-9]{1,30}")) { skipped++; continue; }
                 episodes.add(vid);
+            }
+            if (skipped > 0) {
+                android.util.Log.w("VeyraDetail", "后端详情 id=" + id + "：跳过 " + skipped + " 个非法 vid");
             }
             String title = "", cover = "", intro = "", label = "";
             JSONObject raw = json.optJSONObject("raw");
@@ -282,7 +309,10 @@ final class HongguoRepository {
             if (title.isEmpty()) title = "剧集 " + id;
             if (label.isEmpty()) label = episodes.isEmpty() ? "暂无剧集" : "共 " + episodes.size() + " 集";
             return new Detail(new Series(id, title, cover, intro, label, ""), episodes);
-        } catch (Throwable ignored) {
+        } catch (Throwable error) {
+            /* 以前这里是空的 catch，网络/解析异常全被吞掉，日志里只剩「兜底结果 null」，
+               分不清是后端没数据还是请求根本没成功。 */
+            android.util.Log.w("VeyraDetail", "后端详情异常 id=" + id + "：" + error);
             return null;
         }
     }
